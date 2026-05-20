@@ -200,7 +200,7 @@ export function createTokenjuicePiExtension(config: PiExtensionRuntimeConfig) {
           minSavedCharsAny: 8,
           genericFallbackMinSavedChars: GENERIC_FALLBACK_MIN_SAVED_CHARS,
           genericFallbackMaxRatio: GENERIC_FALLBACK_MAX_RATIO,
-          skipGenericFallbackForCompoundCommands: true,
+          skipGenericFallbackForCompoundCommands: false,
           metadata: {
             source: "pi-tool-result",
           },
