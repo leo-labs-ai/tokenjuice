@@ -11,9 +11,11 @@ import {
   buildBypassNotice,
   buildCompactionNotice,
   buildTokenjuiceDetails,
+  extractBashOutputCommand,
   extractFullOutputPath,
   extractTextContent,
   mergeDetails,
+  parseBashOutputParts,
   parseExitCode,
   stripPiBashEpilogue,
 } from "./tool-result.js";
@@ -136,41 +138,32 @@ export function createTokenjuicePiExtension(config: PiExtensionRuntimeConfig) {
       },
     });
 
-    pi.on("tool_result", async (rawEvent, ctx) => {
-      const event = rawEvent as PiToolResultEvent;
-      if (event.toolName !== "bash") {
-        return undefined;
-      }
+    /**
+     * Compact a single bash-style payload. Returns the rebuilt visible text
+     * plus tokenjuice details when compaction fired, `undefined` when the
+     * heuristics chose to keep the original output, or a `{ bypass: true }`
+     * marker when the user asked for raw-next.
+     */
+    async function runBashCompaction(args: {
+      command: string;
+      visibleText: string;
+      exitCode: number;
+      fullOutputPath: string | undefined;
+      bypass: boolean;
+      sourceLabel: string;
+      cwd: string;
+    }): Promise<
+      | { kind: "bypass"; text: string }
+      | { kind: "compacted"; text: string; notice: string; details: ReturnType<typeof buildTokenjuiceDetails> }
+      | undefined
+    > {
+      const { command, visibleText, exitCode, fullOutputPath, bypass, sourceLabel, cwd } = args;
 
-      refreshState(ctx);
-
-      const shouldBypass = bypassNext;
-      if (shouldBypass) {
-        bypassNext = false;
-      }
-
-      const command = isRecord(event.input) && typeof event.input.command === "string"
-        ? event.input.command
-        : "";
-      if (!enabled || !autoCompactEnabled || !command) {
-        return undefined;
-      }
-
-      const outputText = extractTextContent(event.content);
-      if (!outputText.trim()) {
-        return undefined;
-      }
-
-      const fullOutputPath = extractFullOutputPath(event.details);
-      if (shouldBypass) {
+      if (bypass) {
         const bypassText = fullOutputPath ? await loadFullOutputText(fullOutputPath) : null;
-        return {
-          content: [{ type: "text", text: `${bypassText ?? outputText}\n\n[${buildBypassNotice(fullOutputPath)}]` }],
-        };
+        return { kind: "bypass", text: bypassText ?? visibleText };
       }
 
-      const exitCode = parseExitCode(outputText, Boolean(event.isError));
-      const visibleText = stripPiBashEpilogue(outputText);
       const visibleExecutionInput = {
         toolName: "exec",
         command,
@@ -191,7 +184,7 @@ export function createTokenjuicePiExtension(config: PiExtensionRuntimeConfig) {
         outcome = await compactBashResult({
           source: "pi",
           command,
-          cwd: ctx.cwd,
+          cwd,
           visibleText,
           ...(typeof trustedFullOutputText === "string" ? { trustedFullText: trustedFullOutputText } : {}),
           exitCode,
@@ -201,9 +194,7 @@ export function createTokenjuicePiExtension(config: PiExtensionRuntimeConfig) {
           genericFallbackMinSavedChars: GENERIC_FALLBACK_MIN_SAVED_CHARS,
           genericFallbackMaxRatio: GENERIC_FALLBACK_MAX_RATIO,
           skipGenericFallbackForCompoundCommands: false,
-          metadata: {
-            source: "pi-tool-result",
-          },
+          metadata: { source: sourceLabel },
         });
       } catch (error) {
         throw new Error(`tokenjuice failed to compact bash output: ${formatErrorMessage(error)}`);
@@ -213,11 +204,124 @@ export function createTokenjuicePiExtension(config: PiExtensionRuntimeConfig) {
         return undefined;
       }
 
-      const tokenjuiceDetails = buildTokenjuiceDetails(outcome.result);
-
       return {
-        content: [{ type: "text", text: `${outcome.result.inlineText}\n\n[${buildCompactionNotice(outcome.result, fullOutputPath)}]` }],
-        details: mergeDetails(event.details, tokenjuiceDetails),
+        kind: "compacted",
+        text: outcome.result.inlineText,
+        notice: buildCompactionNotice(outcome.result, fullOutputPath),
+        details: buildTokenjuiceDetails(outcome.result),
+      };
+    }
+
+    pi.on("tool_result", async (rawEvent, ctx) => {
+      const event = rawEvent as PiToolResultEvent;
+      // Match all four bash-tool surfaces pi exposes: the lowercase legacy
+      // `bash` + `bash_output` variants and the Claude-Code-style uppercase
+      // `Bash` + `BashOutput` variants. Tokenjuice treats them identically;
+      // the only branching is foreground (input.command) vs. backgrounded
+      // log read (header + body).
+      const toolName = event.toolName;
+      const isForeground = toolName === "bash" || toolName === "Bash";
+      const isBashOutput = toolName === "bash_output" || toolName === "BashOutput";
+      if (!isForeground && !isBashOutput) {
+        return undefined;
+      }
+
+      refreshState(ctx);
+
+      const shouldBypass = bypassNext;
+      if (shouldBypass) {
+        bypassNext = false;
+      }
+
+      if (!enabled || !autoCompactEnabled) {
+        return undefined;
+      }
+
+      const outputText = extractTextContent(event.content);
+      if (!outputText.trim()) {
+        return undefined;
+      }
+
+      const fullOutputPath = extractFullOutputPath(event.details);
+
+      if (isForeground) {
+        const command = isRecord(event.input) && typeof event.input.command === "string"
+          ? event.input.command
+          : "";
+        if (!command) {
+          return undefined;
+        }
+
+        const exitCode = parseExitCode(outputText, Boolean(event.isError));
+        const visibleText = stripPiBashEpilogue(outputText);
+
+        const outcome = await runBashCompaction({
+          command,
+          visibleText,
+          exitCode,
+          fullOutputPath,
+          bypass: shouldBypass,
+          sourceLabel: "pi-tool-result",
+          cwd: ctx.cwd,
+        });
+        if (!outcome) {
+          return undefined;
+        }
+        if (outcome.kind === "bypass") {
+          return {
+            content: [{ type: "text", text: `${outcome.text}\n\n[${buildBypassNotice(fullOutputPath)}]` }],
+          };
+        }
+        return {
+          content: [{ type: "text", text: `${outcome.text}\n\n[${outcome.notice}]` }],
+          details: mergeDetails(event.details, outcome.details),
+        };
+      }
+
+      // bash_output / BashOutput: the visible payload is `<header>\n\n<body>`
+      // where header carries job status and body is the captured shell output.
+      // Only the body benefits from compaction; the header must be preserved
+      // verbatim so the agent still sees bgId/status/exit/elapsed.
+      const parts = parseBashOutputParts(outputText);
+      if (!parts) {
+        return undefined;
+      }
+
+      // Bail out when we don't know the original command. Heuristics in
+      // compactBashResult key off the command string (e.g. "git status" picks
+      // the git-status reducer), and a synthetic placeholder would just route
+      // everything through the weak generic fallback for no real win.
+      const command = extractBashOutputCommand(event.details);
+      if (!command) {
+        return undefined;
+      }
+
+      const outcome = await runBashCompaction({
+        command,
+        visibleText: parts.body,
+        exitCode: parts.exitCode,
+        fullOutputPath,
+        bypass: shouldBypass,
+        sourceLabel: "pi-bash-output",
+        cwd: ctx.cwd,
+      });
+      if (!outcome) {
+        return undefined;
+      }
+      if (outcome.kind === "bypass") {
+        return {
+          content: [{
+            type: "text",
+            text: `${parts.header}\n\n${outcome.text}\n\n[${buildBypassNotice(fullOutputPath)}]`,
+          }],
+        };
+      }
+      return {
+        content: [{
+          type: "text",
+          text: `${parts.header}\n\n${outcome.text}\n\n[${outcome.notice}]`,
+        }],
+        details: mergeDetails(event.details, outcome.details),
       };
     });
   };

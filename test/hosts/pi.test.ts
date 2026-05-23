@@ -1021,4 +1021,167 @@ describe("installPiExtension", () => {
     expect(result?.content[0].text).toContain("M: src/hosts/pi/extension/runtime.ts");
     expect(await readOptional(markerPath)).toBeUndefined();
   });
+
+  it("compacts the Claude-Code-style uppercase Bash tool the same as lowercase bash", async () => {
+    const home = await createTempDir();
+    const { handlers, fakeCtx } = await installLocalTestExtension(home, "process.exit(7);");
+
+    const result = await handlers.get("tool_result")?.(
+      {
+        toolName: "Bash",
+        input: { command: "git status" },
+        content: [{
+          type: "text",
+          text: [
+            "On branch main",
+            "",
+            "Changes not staged for commit:",
+            "\tmodified:   src/example.ts",
+            "",
+            "no changes added to commit",
+          ].join("\n"),
+        }],
+        details: {},
+      },
+      fakeCtx,
+    );
+
+    expect(result?.content[0].text).toContain("M: src/example.ts");
+    expect(result?.content[0].text).toContain("tokenjuice compacted bash output");
+  });
+
+  it("ignores tool results from non-bash tools", async () => {
+    const home = await createTempDir();
+    const { handlers, fakeCtx } = await installLocalTestExtension(home, "process.exit(7);");
+
+    const result = await handlers.get("tool_result")?.(
+      {
+        toolName: "read",
+        input: { path: "/tmp/example.txt" },
+        content: [{ type: "text", text: "verbose file contents that would otherwise be huge" }],
+        details: {},
+      },
+      fakeCtx,
+    );
+
+    expect(result).toBeUndefined();
+  });
+
+  it("compacts the body of a bash_output result while preserving the status header", async () => {
+    const home = await createTempDir();
+    const { handlers, fakeCtx } = await installLocalTestExtension(home, "process.exit(7);");
+
+    const header = [
+      "bgId: bg_abc123",
+      "status: exited (exit 0)",
+      "elapsed: 1.5s",
+      "log: /tmp/pi-bg-abc.log (12.0 KB, 30 lines)",
+    ].join("\n");
+    const body = [
+      "On branch main",
+      "",
+      "Changes not staged for commit:",
+      "\tmodified:   src/hosts/pi/extension/runtime.ts",
+      "",
+      "no changes added to commit",
+    ].join("\n");
+
+    const result = await handlers.get("tool_result")?.(
+      {
+        toolName: "bash_output",
+        input: { bgId: "bg_abc123" },
+        content: [{ type: "text", text: `${header}\n\n${body}` }],
+        details: { command: "git status", bgId: "bg_abc123" },
+      },
+      fakeCtx,
+    );
+
+    const text = result?.content[0].text ?? "";
+    // Header is preserved verbatim so the agent still sees job status.
+    expect(text.startsWith(`${header}\n\n`)).toBe(true);
+    // Body is replaced with the compacted git-status form.
+    expect(text).toContain("M: src/hosts/pi/extension/runtime.ts");
+    expect(text).toContain("tokenjuice compacted bash output");
+    // No raw git-status verbiage should leak through.
+    expect(text).not.toContain("no changes added to commit");
+  });
+
+  it("compacts BashOutput (uppercase native) the same as bash_output", async () => {
+    const home = await createTempDir();
+    const { handlers, fakeCtx } = await installLocalTestExtension(home, "process.exit(7);");
+
+    const header = "bgId: bg_xyz\nstatus: running\nelapsed: 0.5s\nlog: /tmp/pi-bg-xyz.log (8.0 KB, 20 lines)";
+    const body = [
+      "On branch main",
+      "",
+      "Changes not staged for commit:",
+      "\tmodified:   src/example.ts",
+      "",
+      "no changes added to commit",
+    ].join("\n");
+
+    const result = await handlers.get("tool_result")?.(
+      {
+        toolName: "BashOutput",
+        input: { bgId: "bg_xyz" },
+        content: [{ type: "text", text: `${header}\n\n${body}` }],
+        details: { command: "git status", bgId: "bg_xyz" },
+      },
+      fakeCtx,
+    );
+
+    const text = result?.content[0].text ?? "";
+    expect(text.startsWith(`${header}\n\n`)).toBe(true);
+    expect(text).toContain("M: src/example.ts");
+    expect(text).toContain("tokenjuice compacted bash output");
+  });
+
+  it("leaves bash_output alone when the body has not arrived yet", async () => {
+    const home = await createTempDir();
+    const { handlers, fakeCtx } = await installLocalTestExtension(home, "process.exit(7);");
+
+    const header = "bgId: bg_empty\nstatus: running\nelapsed: 0.1s\nlog: /tmp/pi-bg-empty.log (0.0 KB, 0 lines)";
+
+    const result = await handlers.get("tool_result")?.(
+      {
+        toolName: "bash_output",
+        input: { bgId: "bg_empty" },
+        content: [{ type: "text", text: `${header}\n\n(no output yet)` }],
+        details: { command: "sleep 60", bgId: "bg_empty" },
+      },
+      fakeCtx,
+    );
+
+    expect(result).toBeUndefined();
+  });
+
+  it("bails out of bash_output compaction when the original command is unknown", async () => {
+    const home = await createTempDir();
+    const { handlers, fakeCtx } = await installLocalTestExtension(home, "process.exit(7);");
+
+    const header = "bgId: bg_nocmd\nstatus: exited (exit 0)\nelapsed: 1.0s\nlog: /tmp/pi-bg-nocmd.log (4.0 KB, 6 lines)";
+    const body = [
+      "On branch main",
+      "",
+      "Changes not staged for commit:",
+      "\tmodified:   src/example.ts",
+      "",
+      "no changes added to commit",
+    ].join("\n");
+
+    // Without `details.command` tokenjuice has no command-aware heuristic to
+    // run, so it should leave the result untouched instead of feeding the
+    // weak generic fallback.
+    const result = await handlers.get("tool_result")?.(
+      {
+        toolName: "bash_output",
+        input: { bgId: "bg_nocmd" },
+        content: [{ type: "text", text: `${header}\n\n${body}` }],
+        details: { bgId: "bg_nocmd" },
+      },
+      fakeCtx,
+    );
+
+    expect(result).toBeUndefined();
+  });
 });
