@@ -226,6 +226,15 @@ export function createTokenjuicePiExtension(config: PiExtensionRuntimeConfig) {
         return undefined;
       }
 
+      // Skip compaction inside sub-agent sessions (ctx.source === "child-agent").
+      // Read-only explore agents return curated findings to the parent;
+      // compacting their internal bash output corrupts the signal they exist to
+      // produce, and the parent already receives a compact report. Mirrors how
+      // pi-memory gates heavy work on `ctx.source === "child-agent"`.
+      if ((ctx as { source?: string } | null | undefined)?.source === "child-agent") {
+        return undefined;
+      }
+
       refreshState(ctx);
 
       const shouldBypass = bypassNext;
