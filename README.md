@@ -1,3 +1,5 @@
+> **leo-labs** — brand name (Leonardo + leopard). GitHub org slug is still [`lue-labs`](https://github.com/lue-labs) until rename to **`leo-labs-ai`**. This change does not retarget npm `@lue-labs/*`, `ghcr.io/lue-labs/*`, or clone URLs. Decision `leo-labs-rename-20261003`.
+
 <img src="docs/tokenjuice.jpg" alt="tokenjuice banner"/>
 
 # tokenjuice 🧃
