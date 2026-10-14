@@ -1,3 +1,5 @@
+> **leo-labs** is the brand name (Leonardo + leopard). The GitHub org slug is [leo-labs-ai](https://github.com/leo-labs-ai); `lue-labs` web and git URLs redirect, but npm scopes, `ghcr.io` paths and Actions `uses:` refs do not.
+
 <img src="docs/tokenjuice.jpg" alt="tokenjuice banner"/>
 
 # tokenjuice 🧃
