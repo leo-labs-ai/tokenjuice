@@ -300,6 +300,59 @@ describe("reduceExecution", () => {
     expect(result.inlineText).toContain("lines omitted");
   });
 
+  describe("centre excerpt for read-like, search, listing and diff output", () => {
+    const rows = (count: number) => Array.from({ length: count }, (_, index) => `row ${index}: ${"x".repeat(30)}`);
+    const omittedCounts = (text: string): number[] =>
+      text.split("\n").flatMap((line) => {
+        const match = /^\.\.\. (\d+) lines omitted \.\.\.$/u.exec(line);
+        return match ? [Number(match[1])] : [];
+      });
+
+    it("keeps the middle row and exact omission counts for 1000 rows at a 400-char budget", async () => {
+      const result = await reduceExecution(
+        { toolName: "exec", command: "custom-tool dump", combinedText: rows(1000).join("\n"), exitCode: 0 },
+        { maxInlineChars: 400 },
+      );
+      const lines = result.inlineText.split("\n");
+      const counts = omittedCounts(result.inlineText);
+
+      expect(result.classification.family).toBe("generic");
+      expect(countTextChars(result.inlineText)).toBeLessThanOrEqual(400);
+      expect(result.inlineText).toContain("row 500: ");
+      expect(counts).toHaveLength(2);
+      // Each non-marker line is one original row, whole or clipped with a stated char count.
+      expect(lines.length - counts.length + counts.reduce((sum, count) => sum + count, 0)).toBe(1000);
+    });
+
+    it("keeps the middle match of long search output", async () => {
+      const rawText = Array.from({ length: 400 }, (_, index) => `src/file${index}.ts:${index + 1}:const value${index} = 1;`).join("\n");
+      const result = await reduceExecution({ toolName: "exec", command: "rg -n value", combinedText: rawText, exitCode: 0 });
+
+      expect(result.classification.family).toBe("search");
+      expect(result.inlineText).toContain("src/file200.ts:201:");
+      expect(countTextChars(result.inlineText)).toBeLessThanOrEqual(1200);
+    });
+
+    it("keeps failure output on the plain head/tail path", async () => {
+      const result = await reduceExecution({ toolName: "exec", command: "custom-tool dump", combinedText: rows(1000).join("\n"), exitCode: 1 });
+
+      expect(result.inlineText.startsWith("exit 1\n")).toBe(true);
+      expect(result.inlineText).not.toContain("row 500: ");
+      expect(omittedCounts(result.inlineText)).toEqual([968]);
+    });
+
+    it("leaves families outside read-like, search, listing and diff output unchanged", async () => {
+      const rawText = Array.from({ length: 200 }, (_, index) => `src/module${index}.ts(${index + 1},5): error TS2322: Type 'string' is not assignable to type 'number'.`).join("\n");
+      const success = await reduceExecution({ toolName: "exec", command: "tsc --noEmit", combinedText: rawText, exitCode: 0 });
+      const failure = await reduceExecution({ toolName: "exec", command: "tsc --noEmit", combinedText: rawText, exitCode: 2 });
+
+      expect(success.classification.family).toBe("build-typescript");
+      expect(omittedCounts(success.inlineText)).toEqual([192]);
+      expect(omittedCounts(failure.inlineText)).toEqual([190]);
+      expect(failure.inlineText).not.toContain("src/module100.ts");
+    });
+  });
+
   it("minifies whole JSON object output before generic fallback", async () => {
     const rawText = prettyJson({
       runtimeVersion: "2026.5.7",
