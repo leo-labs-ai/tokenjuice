@@ -1,6 +1,19 @@
 import { describe, expect, it } from "vitest";
 
-import { clampText, clampTextMiddleWithMetadata, clampTextWithMetadata, countTerminalCells, countTextChars, headTail, stripAnsi } from "../../src/core/text.js";
+import { clampText, clampTextMiddleWithMetadata, clampTextWithMetadata, countTerminalCells, countTextChars, headCentreTail, headTail, stripAnsi } from "../../src/core/text.js";
+
+const omittedCounts = (lines: string[]): number[] =>
+  lines.flatMap((line) => {
+    const match = /^\.\.\. (\d+) lines omitted \.\.\.$/u.exec(line);
+    return match ? [Number(match[1])] : [];
+  });
+
+// Every output line is either one original line (whole or clipped) or a marker
+// that stands for N original lines.
+const accountedLines = (lines: string[]): number => {
+  const counts = omittedCounts(lines);
+  return lines.length - counts.length + counts.reduce((sum, count) => sum + count, 0);
+};
 
 describe("text helpers", () => {
   it("strips xterm colors and OSC hyperlinks while preserving emoji and CJK", () => {
@@ -113,6 +126,63 @@ describe("text helpers", () => {
         authoritative: false,
         kinds: ["no-omit-char-clip-passthrough"],
       },
+    });
+  });
+
+  describe("headCentreTail", () => {
+    const rows = (count: number, width: number) =>
+      Array.from({ length: count }, (_, index) => `row ${index} ${"x".repeat(width)}`);
+
+    it("matches headTail when the lines already fit the budget", () => {
+      const lines = rows(30, 2);
+      expect(headCentreTail(lines, 8, 8, 1200)).toEqual(headTail(lines, 8, 8));
+    });
+
+    it("keeps head, tail and a centre excerpt with exact omission counts", () => {
+      const lines = rows(1000, 40);
+      const result = headCentreTail(lines, 8, 8, 1200);
+      const text = result.lines.join("\n");
+
+      expect(countTextChars(text)).toBeLessThanOrEqual(1200);
+      expect(result.lines.slice(0, 8)).toEqual(lines.slice(0, 8));
+      expect(result.lines.slice(-8)).toEqual(lines.slice(-8));
+      expect(result.lines).toContain(lines[500]);
+      expect(omittedCounts(result.lines)).toHaveLength(2);
+      expect(accountedLines(result.lines)).toBe(1000);
+      expect(result.compaction).toEqual({ authoritative: true, kinds: ["head-tail-omission"] });
+    });
+
+    it("counts the lines behind an earlier omission marker", () => {
+      const lines = [...rows(40, 40), "... 500 lines omitted ...", ...rows(40, 40)];
+      const result = headCentreTail(lines, 8, 8, 1200);
+
+      expect(accountedLines(result.lines)).toBe(lines.length - 1 + 500);
+    });
+
+    it("clips long lines, states the cut chars and stays within the budget", () => {
+      const lines = Array.from({ length: 40 }, (_, index) => `line ${index} ${"y".repeat(500)}`);
+      const result = headCentreTail(lines, 8, 8, 1200);
+
+      expect(countTextChars(result.lines.join("\n"))).toBeLessThanOrEqual(1200);
+      expect(result.lines.join("\n")).toMatch(/…\[\+\d+ chars\]/u);
+      expect(result.lines.some((line) => line.startsWith("line 20 "))).toBe(true);
+      expect(accountedLines(result.lines)).toBe(40);
+      expect(result.compaction?.kinds).toEqual(["head-tail-omission", "middle-truncation"]);
+    });
+
+    it("keeps the middle of a few overlong lines when nothing is omitted by count", () => {
+      const lines = Array.from({ length: 5 }, (_, index) => `part ${index} ${"z".repeat(600)}`);
+      const result = headCentreTail(lines, 8, 8, 1200);
+
+      expect(countTextChars(result.lines.join("\n"))).toBeLessThanOrEqual(1200);
+      expect(result.lines.some((line) => line.startsWith("part 2 "))).toBe(true);
+      expect(accountedLines(result.lines)).toBe(5);
+    });
+
+    it("falls back to headTail for one-sided or tiny inputs", () => {
+      const lines = rows(100, 40);
+      expect(headCentreTail(lines, 8, 0, 400)).toEqual(headTail(lines, 8, 0));
+      expect(headCentreTail(["a", "b"], 1, 1, 1)).toEqual(headTail(["a", "b"], 1, 1));
     });
   });
 });

@@ -1,4 +1,4 @@
-import { createCompactionMetadata, createPassthroughCompactionMetadata, type CompactionMetadata } from "./compaction-metadata.js";
+import { createCompactionMetadata, createPassthroughCompactionMetadata, type CompactionKind, type CompactionMetadata } from "./compaction-metadata.js";
 
 const ANSI_CSI_PATTERN = new RegExp(String.raw`\u001B\[[0-?]*[ -/]*[@-~]`, "g");
 const ANSI_OSC_PATTERN = new RegExp(String.raw`\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)`, "g");
@@ -165,6 +165,203 @@ export function headTail(lines: string[], head: number, tail: number, noOmit = f
     ],
     compaction: createCompactionMetadata("head-tail-omission"),
   };
+}
+
+const OMITTED_LINES_MARKER_PATTERN = /^\.\.\. (\d+) lines omitted \.\.\.$/u;
+// Upper bound for one "... N lines omitted ..." marker plus its newline.
+const OMITTED_LINES_MARKER_RESERVE = 32;
+const CENTRE_EXCERPT_SHARE = 0.2;
+const HEAD_SHARE = 0.7;
+const MIN_PARTIAL_LINE_CHARS = 48;
+
+function formatOmittedLines(count: number): string {
+  return `... ${count} lines omitted ...`;
+}
+
+// Counts original lines in a dropped range. An earlier "... N lines omitted ..."
+// marker stands for N lines, so the new marker never under-reports.
+function countOmittedLines(lines: string[]): number {
+  let total = 0;
+  for (const line of lines) {
+    const match = OMITTED_LINES_MARKER_PATTERN.exec(line);
+    total += match ? Number(match[1]) : 1;
+  }
+  return total;
+}
+
+// Clips one line to at most maxChars and states how many chars were cut.
+function clipLine(line: string, maxChars: number, keepEnd: boolean): { text: string; clipped: boolean } {
+  const segments = graphemes(line);
+  if (segments.length <= maxChars) {
+    return { text: line, clipped: false };
+  }
+  const keep = Math.max(0, maxChars - `…[+${segments.length} chars]`.length);
+  const omitted = segments.length - keep;
+  if (keepEnd) {
+    return { text: `[+${omitted} chars]…${keep > 0 ? segments.slice(-keep).join("") : ""}`, clipped: true };
+  }
+  return { text: `${segments.slice(0, keep).join("")}…[+${omitted} chars]`, clipped: true };
+}
+
+// True when lines joined by newlines have at most maxChars graphemes. Stops
+// counting as soon as the budget is exceeded.
+function fitsInChars(lines: string[], maxChars: number): boolean {
+  let codeUnits = Math.max(0, lines.length - 1);
+  for (const line of lines) {
+    codeUnits += line.length;
+  }
+  if (codeUnits <= maxChars) {
+    return true;
+  }
+  let chars = Math.max(0, lines.length - 1);
+  for (const line of lines) {
+    chars += countTextChars(line);
+    if (chars > maxChars) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Like headTail, but for output longer than maxChars it also keeps an excerpt
+ * from the centre of the dropped range and fits the result into maxChars, so a
+ * later middle clamp does not cut it.
+ *
+ * - The centre excerpt grows out from the middle line: at most min(head, tail)
+ *   lines and CENTRE_EXCERPT_SHARE of the budget.
+ * - When head, centre and tail fit, head and tail are exactly headTail's.
+ *   Otherwise head and tail share the rest of the budget 70/30, like the middle
+ *   clamp, and a partly kept line states how many chars were cut.
+ * - Each "... N lines omitted ..." marker counts the original lines it replaces.
+ */
+export function headCentreTail(lines: string[], head: number, tail: number, maxChars: number): { lines: string[]; compaction?: CompactionMetadata } {
+  if (head <= 0 || tail <= 0 || lines.length < 3) {
+    return headTail(lines, head, tail);
+  }
+  // Output that already fits keeps headTail's behaviour; the excerpt is for
+  // output that would otherwise be clamped.
+  if (fitsInChars(lines, maxChars)) {
+    return headTail(lines, head, tail);
+  }
+  const gap = lines.length > head + tail;
+
+  const charCache = new Map<number, number>();
+  const lineChars = (index: number): number => {
+    let chars = charCache.get(index);
+    if (chars === undefined) {
+      chars = countTextChars(lines[index] ?? "");
+      charCache.set(index, chars);
+    }
+    return chars;
+  };
+
+  const middle = Math.floor(lines.length / 2);
+  const headEnd = gap ? head : middle;
+  const tailStart = gap ? lines.length - tail : middle + 1;
+  const seed = Math.min(Math.max(middle, headEnd), tailStart - 1);
+  const available = Math.max(0, maxChars - 2 * OMITTED_LINES_MARKER_RESERVE);
+
+  // Centre excerpt [centreStart, centreEnd), grown alternately below and above the seed.
+  const centreBudget = Math.floor(available * CENTRE_EXCERPT_SHARE);
+  const seedLine = clipLine(lines[seed] ?? "", centreBudget, false);
+  let centreChars = countTextChars(seedLine.text);
+  let centreStart = seed;
+  let centreEnd = seed + 1;
+  const centreCap = Math.min(head, tail);
+  let growDown = true;
+  let growUp = true;
+  while ((growDown || growUp) && centreEnd - centreStart < centreCap) {
+    if (growDown) {
+      const cost = centreEnd < tailStart ? lineChars(centreEnd) + 1 : Number.POSITIVE_INFINITY;
+      growDown = centreChars + cost <= centreBudget;
+      if (growDown) {
+        centreChars += cost;
+        centreEnd += 1;
+      }
+    }
+    if (growUp && centreEnd - centreStart < centreCap) {
+      const cost = centreStart > headEnd ? lineChars(centreStart - 1) + 1 : Number.POSITIVE_INFINITY;
+      growUp = centreChars + cost <= centreBudget;
+      if (growUp) {
+        centreChars += cost;
+        centreStart -= 1;
+      }
+    }
+  }
+
+  const remaining = Math.max(0, available - centreChars);
+  let headFull = 0;
+  for (let index = 0; index < headEnd; index += 1) {
+    headFull += lineChars(index) + 1;
+  }
+  let tailFull = 0;
+  for (let index = tailStart; index < lines.length; index += 1) {
+    tailFull += lineChars(index) + 1;
+  }
+
+  let clipped = seedLine.clipped;
+  const headLines: string[] = [];
+  const tailLines: string[] = [];
+  let tailKeptStart = lines.length;
+  if (headFull + tailFull <= remaining) {
+    headLines.push(...lines.slice(0, headEnd));
+    tailLines.push(...lines.slice(tailStart));
+    tailKeptStart = tailStart;
+  } else {
+    const headBudget = Math.max(Math.floor(remaining * HEAD_SHARE), remaining - tailFull);
+    let headUsed = 0;
+    for (let index = 0; index < headEnd; index += 1) {
+      const cost = lineChars(index) + 1;
+      if (headUsed + cost <= headBudget) {
+        headLines.push(lines[index] ?? "");
+        headUsed += cost;
+        continue;
+      }
+      const rest = headBudget - headUsed - 1;
+      if (rest >= MIN_PARTIAL_LINE_CHARS || headLines.length === 0) {
+        const partial = clipLine(lines[index] ?? "", Math.max(0, rest), false);
+        headLines.push(partial.text);
+        headUsed += countTextChars(partial.text) + 1;
+        clipped = true;
+      }
+      break;
+    }
+    const tailBudget = Math.max(0, remaining - headUsed);
+    let tailUsed = 0;
+    for (let index = lines.length - 1; index >= tailStart; index -= 1) {
+      const cost = lineChars(index) + 1;
+      if (tailUsed + cost <= tailBudget) {
+        tailLines.unshift(lines[index] ?? "");
+        tailUsed += cost;
+        tailKeptStart = index;
+        continue;
+      }
+      const rest = tailBudget - tailUsed - 1;
+      if (rest >= MIN_PARTIAL_LINE_CHARS || tailLines.length === 0) {
+        tailLines.unshift(clipLine(lines[index] ?? "", Math.max(0, rest), true).text);
+        tailKeptStart = index;
+        clipped = true;
+      }
+      break;
+    }
+  }
+
+  const omittedBefore = lines.slice(headLines.length, centreStart);
+  const omittedAfter = lines.slice(centreEnd, tailKeptStart);
+  const centreLines = lines.slice(centreStart, centreEnd).map((line, offset) => (centreStart + offset === seed ? seedLine.text : line));
+  const output = [
+    ...headLines,
+    ...(omittedBefore.length > 0 ? [formatOmittedLines(countOmittedLines(omittedBefore))] : []),
+    ...centreLines,
+    ...(omittedAfter.length > 0 ? [formatOmittedLines(countOmittedLines(omittedAfter))] : []),
+    ...tailLines,
+  ];
+  const kinds: CompactionKind[] = [
+    ...(omittedBefore.length > 0 || omittedAfter.length > 0 ? ["head-tail-omission" as const] : []),
+    ...(clipped ? ["middle-truncation" as const] : []),
+  ];
+  return kinds.length > 0 ? { lines: output, compaction: createCompactionMetadata(...kinds) } : { lines: output };
 }
 
 export function clampText(text: string, maxChars: number): string {

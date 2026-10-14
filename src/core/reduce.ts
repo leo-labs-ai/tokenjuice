@@ -3,7 +3,7 @@ import { hasMultipleSubstantiveShellCommands } from "./command-match.js";
 import { classifyExecution, resolveRuleMatch } from "./classify.js";
 import { isFileContentInspectionCommand, isVerbatimConfigInspectionCommand } from "./command-identity.js";
 import { normalizeExecutionInput } from "./execution-input.js";
-import { clampTextMiddleWithMetadata, clampTextWithMetadata, countTextChars, dedupeAdjacent, headTail, normalizeLines, pluralize, stripAnsi, trimEmptyEdges } from "./text.js";
+import { clampTextMiddleWithMetadata, clampTextWithMetadata, countTextChars, dedupeAdjacent, headCentreTail, headTail, normalizeLines, pluralize, stripAnsi, trimEmptyEdges } from "./text.js";
 import { storeArtifact, storeArtifactMetadata } from "./artifacts.js";
 import { NO_COMPACTION_METADATA, mergeCompactionMetadata, type CompactionMetadata } from "./compaction-metadata.js";
 import { buildGithubActionsFailureSummary } from "./github-actions-summary.js";
@@ -16,6 +16,18 @@ import type { CompactResult, CompiledRule, ReduceOptions, ToolExecutionInput } f
 const TINY_OUTPUT_MAX_CHARS = 240;
 const SMALL_OUTPUT_PASSTHROUGH_MIN_SAVED_CHARS = 120;
 const SMALL_OUTPUT_PASSTHROUGH_MAX_RATIO = 0.75;
+// Read-like, search, listing and diff output: evidence can sit anywhere, so a
+// successful run also keeps a centre excerpt (headCentreTail). Failure output and
+// all other families keep plain headTail.
+const CENTRE_EXCERPT_FAMILIES = new Set([
+  "generic",
+  "search",
+  "filesystem-find",
+  "filesystem-inventory",
+  "filesystem-listing",
+  "git-diff",
+  "git-show",
+]);
 
 function buildRawText(input: ToolExecutionInput): string {
   if (input.combinedText) {
@@ -55,6 +67,7 @@ function applyRule(
   compiledRule: CompiledRule,
   input: ToolExecutionInput,
   rawText: string,
+  maxInlineChars: number,
   noOmit = false,
 ): { summary: string; facts: Record<string, number>; compaction: CompactionMetadata } {
   const rule = compiledRule.rule;
@@ -141,7 +154,8 @@ function applyRule(
     };
   }
 
-  const summarize = input.exitCode && input.exitCode !== 0 && rule.failure?.preserveOnFailure
+  const failed = (input.exitCode ?? 0) !== 0;
+  const summarize = failed && rule.failure?.preserveOnFailure
     ? {
         head: rule.failure.head ?? 6,
         tail: rule.failure.tail ?? 12,
@@ -151,7 +165,15 @@ function applyRule(
         tail: rule.summarize?.tail ?? 6,
       };
 
-  const compacted = headTail(lines, summarize.head, summarize.tail, noOmit);
+  let compacted: ReturnType<typeof headTail>;
+  if (!noOmit && !failed && CENTRE_EXCERPT_FAMILIES.has(rule.family)) {
+    // Leave room for the facts line that formatInline may put above the summary.
+    const factsLine = formatFactsLine(facts);
+    const budget = maxInlineChars - (factsLine ? countTextChars(factsLine) + 1 : 0);
+    compacted = headCentreTail(lines, summarize.head, summarize.tail, budget);
+  } else {
+    compacted = headTail(lines, summarize.head, summarize.tail, noOmit);
+  }
   return {
     summary: compacted.lines.join("\n").trim(),
     facts,
@@ -219,6 +241,13 @@ function isTerseDiscoveryCommand(classification: { family: string }, input: Tool
   return false;
 }
 
+function formatFactsLine(facts: Record<string, number>): string {
+  return Object.entries(facts)
+    .filter(([, count]) => count > 0)
+    .map(([name, count]) => pluralize(count, name))
+    .join(", ");
+}
+
 function formatInline(
   classification: { family: string },
   input: ToolExecutionInput,
@@ -226,9 +255,7 @@ function formatInline(
   facts: Record<string, number>,
   noOmit = false,
 ): string {
-  const factParts = Object.entries(facts)
-    .filter(([, count]) => count > 0)
-    .map(([name, count]) => pluralize(count, name));
+  const factsLine = formatFactsLine(facts);
 
   const lines: string[] = [];
   if (input.exitCode && input.exitCode !== 0) {
@@ -243,8 +270,8 @@ function formatInline(
     )
     || (classification.family === "test-results" && (input.exitCode ?? 0) !== 0);
 
-  if (shouldIncludeFacts && factParts.length > 0) {
-    lines.push(factParts.join(", "));
+  if (shouldIncludeFacts && factsLine) {
+    lines.push(factsLine);
   }
   lines.push(summary);
   return lines.join("\n").trim();
@@ -587,7 +614,7 @@ export async function reduceExecutionWithRules(
     }
   }
 
-  const { summary, facts, compaction } = applyRule(matchedRule, reducerInput, rawText, opts.noOmit);
+  const { summary, facts, compaction } = applyRule(matchedRule, reducerInput, rawText, maxInlineChars, opts.noOmit);
   const compactText = formatInline(classification, reducerInput, summary || "(no output)", facts, opts.noOmit);
   const selectedText = selectInlineText(classification, reducerInput, rawText, compactText, maxInlineChars, compaction, opts.noOmit);
   const clamp = classification.family === "help" || selectedText.text.includes("\n") ? clampTextMiddleWithMetadata : clampTextWithMetadata;
