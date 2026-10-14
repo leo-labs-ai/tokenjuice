@@ -1,4 +1,4 @@
-> **leo-labs** — brand name (Leonardo + leopard). GitHub org slug is **[`leo-labs-ai`](https://github.com/leo-labs-ai)** as of 2026-10-03. Repository web and git URLs under `lue-labs` redirect; the org API name does not. npm `@lue-labs/*` and `ghcr.io/lue-labs/*` are unchanged in this pass. Decision `leo-labs-rename-20261003`.
+> **leo-labs** is the brand name (Leonardo + leopard). The GitHub org slug is [leo-labs-ai](https://github.com/leo-labs-ai); `lue-labs` web and git URLs redirect, but npm scopes, `ghcr.io` paths and Actions `uses:` refs do not.
 
 <img src="docs/tokenjuice.jpg" alt="tokenjuice banner"/>
 
