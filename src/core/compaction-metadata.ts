@@ -84,14 +84,20 @@ function describeOmission(omittedLines: number, exact: boolean): string {
   return `${count} omitted`;
 }
 
-function buildOmittedFooter(omission: string, rawArtifactPath?: string): string {
+function buildOmittedFooter(omission: string, rawArtifactPath?: string, rerunSafe = false): string {
+  const lead = `[tokenjuice] Output compacted: ${omission}, so this is not the complete output.`;
   if (rawArtifactPath) {
-    return `[tokenjuice] Output compacted: ${omission}, so this is not the complete output. The full raw output is saved at ${rawArtifactPath} — read that file directly if you need any omitted detail. ${DO_NOT_RECOVER}`;
+    return `${lead} The full raw output is saved at ${rawArtifactPath} — read that file directly if you need any omitted detail. ${DO_NOT_RECOVER}`;
   }
-  return `[tokenjuice] Output compacted: ${omission}, so this is not the complete output. The omitted content was not saved and is not retrievable from tokenjuice. Proceed with this output if it is enough; only if you need the omitted detail, re-run once with \`tokenjuice wrap --raw -- <command>\`.`;
+  if (rerunSafe) {
+    // Read-only commands (listings, searches, git diff/show, cat-like reads) can be re-run without side effects.
+    return `${lead} The omitted content was not saved and is not retrievable from tokenjuice. Proceed with this output if it is enough; only if you need the omitted detail, re-run once with \`tokenjuice wrap --raw -- <command>\`.`;
+  }
+  // Re-running anything else could repeat side effects, so do not suggest it.
+  return `${lead} The omitted content was not saved and is not retrievable. Proceed with this output. ${DO_NOT_RECOVER}`;
 }
 
-/** Footer for omitting compaction when no line count is known and no raw output was saved. */
+/** Footer for omitting compaction when no line count is known, no raw output was saved and the command is not known to be read-only. */
 export const WRAP_AUTHORITATIVE_FOOTER = buildOmittedFooter(describeOmission(0, false));
 
 export type WrapFooterOptions = {
@@ -99,13 +105,20 @@ export type WrapFooterOptions = {
   inlineText?: string;
   /** Path of the saved raw output artifact, when one exists. */
   rawArtifactPath?: string;
+  /**
+   * True only when the command is read-only (see `isReadOnlyRerunCommand`).
+   * Only then may the footer suggest a `--raw` re-run.
+   */
+  rerunSafe?: boolean;
 };
 
 /**
  * Footer appended to compacted wrap output. Omitting kinds say that content
  * was dropped (with the line count when the markers carry it) and point at the
- * saved raw output when there is one. Only noise-only compaction claims the
- * output is complete.
+ * saved raw output when there is one. Without saved output, only read-only
+ * commands (`rerunSafe`) get the `--raw` re-run hint; everything else is told
+ * the omitted content is not retrievable. Only noise-only compaction claims
+ * the output is complete.
  */
 export function buildWrapAuthoritativeFooter(metadata: CompactionMetadata | undefined, options: WrapFooterOptions = {}): string {
   if (!compactionOmitsContent(metadata)) {
@@ -114,7 +127,7 @@ export function buildWrapAuthoritativeFooter(metadata: CompactionMetadata | unde
   const kinds = metadata?.kinds ?? [];
   const omittedLines = countOmittedLines(options.inlineText ?? "");
   const exact = kinds.every((kind) => LINE_COUNTED_KINDS.has(kind));
-  return buildOmittedFooter(describeOmission(omittedLines, exact), options.rawArtifactPath);
+  return buildOmittedFooter(describeOmission(omittedLines, exact), options.rawArtifactPath, options.rerunSafe === true);
 }
 
 export function createCompactionMetadata(...kinds: CompactionKind[]): CompactionMetadata {

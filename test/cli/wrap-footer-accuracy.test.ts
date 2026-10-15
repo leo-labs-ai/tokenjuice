@@ -10,7 +10,7 @@ import { decorateWrapInlineText } from "../../src/cli/main.js";
 
 import type { CompactResult } from "../../src/types.js";
 
-const RAW_PATH = "/home/luke/.tokenjuice/artifacts/tj_0123456789ab.txt";
+const RAW_PATH = "/tmp/tokenjuice-artifacts/tj_0123456789ab.txt";
 
 function compactedResult(kinds: CompactionKind[], inlineText: string, rawPath?: string): CompactResult {
   return {
@@ -79,6 +79,29 @@ describe("wrap footer accuracy", () => {
     expect(footer).toContain(`The full raw output is saved at ${RAW_PATH}`);
     expect(footer).not.toContain("not retrievable");
     expect(footer).not.toContain("complete, authoritative");
+  });
+
+  it("suggests a --raw re-run only for read-only commands", () => {
+    const result = compactedResult(["head-tail-omission"], "first\n... 120 lines omitted ...\nlast");
+
+    for (const argv of [["git", "diff"], ["rg", "TODO", "src"], ["cat", "big.log"], ["bash", "-lc", "cd repo && git show HEAD"]]) {
+      const footer = footerOf(decorateWrapInlineText(result, false, argv));
+      expect(footer).toContain("re-run once with `tokenjuice wrap --raw -- <command>`");
+    }
+
+    for (const argv of [["pnpm", "test"], ["make", "deploy"], ["bash", "-lc", "git diff > out.patch"], ["sed", "-i", "s/a/b/", "f.txt"]]) {
+      const footer = footerOf(decorateWrapInlineText(result, false, argv));
+      expect(footer).toContain("The omitted content was not saved and is not retrievable.");
+      expect(footer).not.toContain("--raw");
+      expect(footer).toContain("Do not re-run the command");
+    }
+  });
+
+  it("never suggests a re-run when the command is unknown", () => {
+    const footer = footerOf(decorateWrapInlineText(compactedResult(["tail-truncation"], "head\n... truncated ..."), false));
+
+    expect(footer).not.toContain("--raw");
+    expect(footer).toContain("not retrievable");
   });
 
   it("keeps the complete wording when no kind drops content", () => {
