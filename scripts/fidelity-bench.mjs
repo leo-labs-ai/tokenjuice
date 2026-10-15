@@ -146,13 +146,13 @@ const ANSI = new RegExp(String.raw`\u001B(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001B
 // Stored files carry no command. Infer a representative one so the matching
 // reducer runs: read-* -> cat, grep-* or path:line: text -> rg, diff text ->
 // git diff, path-per-line text -> find, everything else -> generic fallback.
-// Diff text is "diff --git" or a bare unified "--- / +++ / @@" header, after
-// stripping ANSI colour codes (git diff --color).
+// Diff text is "diff --git" or a bare unified "--- / +++ / @@ -a,b +c,d @@"
+// header, after stripping ANSI colour codes (git diff --color).
 function inferCommand(name, text) {
   if (name.startsWith("read-")) return { family: "read", command: "cat " + name };
   const head = text.slice(0, 20_000);
   const plain = head.replace(ANSI, "");
-  if (/^diff --git /mu.test(plain) || /^--- \S.*\n\+\+\+ \S.*\n@@ -\d/mu.test(plain)) return { family: "diff", command: "git diff" };
+  if (/^diff --git /mu.test(plain) || /^--- \S.*\n\+\+\+ \S.*\n@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/mu.test(plain)) return { family: "diff", command: "git diff" };
   const sampleLines = head.split("\n").filter((line) => line.trim()).slice(0, 50);
   const share = (pattern) => sampleLines.length ? sampleLines.filter((line) => pattern.test(line)).length / sampleLines.length : 0;
   if (name.startsWith("grep-") || share(/^[^\s:]+:\d+[:-]/u) >= 0.6) return { family: "grep", command: "rg -n pattern" };

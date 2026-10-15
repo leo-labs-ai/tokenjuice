@@ -27,6 +27,9 @@ const outputs: Record<string, string> = {
   "files.txt": ["src/a.ts", "src/b/c.ts", "test/d.test.ts"].join("\n"),
   "read-code.txt": ["const a = 1;", "--- not a header", "+++ still not", "@@ -1 is text"].join("\n"),
   "notes.txt": ["-- a SQL comment", "--- divider", "plain text"].join("\n"),
+  // Neutral name so the text reaches the diff detector: "---"/"+++" lines and an
+  // "@@ -1" line that is not a full hunk header must not count as a diff.
+  "loose-hunk.txt": ["--- not a header", "+++ still not", "@@ -1 is text"].join("\n"),
 };
 
 describe("fidelity-bench", () => {
@@ -38,7 +41,7 @@ describe("fidelity-bench", () => {
       const families = Object.fromEntries(
         Object.entries(JSON.parse(stdout).byFamily as Record<string, { files: number }>).map(([family, stats]) => [family, stats.files]),
       );
-      expect(families).toEqual({ diff: 2, grep: 1, listing: 1, read: 1, generic: 1 });
+      expect(families).toEqual({ diff: 2, grep: 1, listing: 1, read: 1, generic: 2 });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
