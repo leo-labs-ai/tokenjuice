@@ -21,6 +21,14 @@ describe("isReadOnlyRerunCommand", () => {
     [["LC_ALL=C", "rg", "needle"]],
     [["bash", "-lc", "git show HEAD --stat"]],
     [["sh", "-c", "cd repo && rg needle"]],
+    [["sed", "s/a/b/g", "file.txt"]],
+    [["sed", "-n", "s|a/b|c|p", "file.txt"]],
+    [["sed", "-ne", "10,20p", "file.txt"]],
+    [["tree", "-L", "2", "src"]],
+    [["yq", "-P", ".a", "file.yaml"]],
+    [["head", "-50", "big.log"]],
+    [["grep", "-A3", "--color=always", "TODO", "src"]],
+    [["git", "diff", "--stat", "HEAD~1", "--", "src"]],
   ])("allows a raw re-run for read-only %j", (argv) => {
     expect(isReadOnlyRerunCommand(argv)).toBe(true);
   });
@@ -49,6 +57,29 @@ describe("isReadOnlyRerunCommand", () => {
     [["bash", "-lc", "rg needle; rm -rf build"]],
     [["bash", "script.sh"]],
     [[]],
+    // t-0014 review: sed's w command after a substitution still writes a file.
+    [["sed", "s/a/b/;w /tmp/p", "input.txt"]],
+    // t-0014 review: tree -o writes its listing to a file.
+    [["tree", "-o", "report.txt", "."]],
+    // t-0014 review: -i inside a bundled flag still edits in place.
+    [["yq", "-Pi", ".a = 1", "file.yaml"]],
+    [["sed", "s/a/b/w out.txt", "file.txt"]],
+    [["sed", "s/a/b/e", "file.txt"]],
+    [["sed", "1p;W out.txt", "file.txt"]],
+    [["sed", "-ni", "p", "file.txt"]],
+    [["sed", "-e", "p", "-e", "r other.txt", "file.txt"]],
+    [["tree", "-R", "-H", ".", "-L", "1"]],
+    [["yq", "--inplace", ".a = 1", "file.yaml"]],
+    [["tail", "-f", "app.log"]],
+    [["git", "diff", "--color", "--output=changes.patch"]],
+    [["git", "diff", "--out=changes.patch"]],
+    [["git", "grep", "-O", "needle"]],
+    [["find", ".", "-fprint", "out.txt"]],
+    // Deny by default: any flag that is not on the command's allow-list.
+    [["cat", "--some-new-flag", "file.txt"]],
+    [["ls", "-la", "--unknown"]],
+    [["rg", "--pre-glob", "*.gz", "needle"]],
+    [["jq", "--arg", "x", "1", ".", "data.json"]],
   ])("refuses a raw re-run for %j", (argv) => {
     expect(isReadOnlyRerunCommand(argv)).toBe(false);
   });
