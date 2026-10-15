@@ -84,12 +84,12 @@ describe("wrap footer accuracy", () => {
   it("suggests a --raw re-run only for read-only commands", () => {
     const result = compactedResult(["head-tail-omission"], "first\n... 120 lines omitted ...\nlast");
 
-    for (const argv of [["git", "diff"], ["rg", "TODO", "src"], ["cat", "big.log"], ["bash", "-lc", "cd repo && git show HEAD"]]) {
+    for (const argv of [["git", "diff"], ["rg", "TODO", "src"], ["cat", "big.log"], ["bash", "-lc", "git show HEAD"]]) {
       const footer = footerOf(decorateWrapInlineText(result, false, argv));
       expect(footer).toContain("re-run once with `tokenjuice wrap --raw -- <command>`");
     }
 
-    for (const argv of [["pnpm", "test"], ["make", "deploy"], ["bash", "-lc", "git diff > out.patch"], ["sed", "-i", "s/a/b/", "f.txt"]]) {
+    for (const argv of [["pnpm", "test"], ["make", "deploy"], ["bash", "-lc", "git diff > out.patch"], ["sed", "-i", "s/a/b/", "f.txt"], ["bash", "-lc", "cd repo && git show HEAD"], ["sh", "-c", 'cd "$(touch marker)" && cat f.txt']]) {
       const footer = footerOf(decorateWrapInlineText(result, false, argv));
       expect(footer).toContain("The omitted content was not saved and is not retrievable.");
       expect(footer).not.toContain("--raw");

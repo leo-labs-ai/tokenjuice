@@ -20,9 +20,10 @@ describe("isReadOnlyRerunCommand", () => {
     [["git", "grep", "needle"]],
     [["LC_ALL=C", "rg", "needle"]],
     [["bash", "-lc", "git show HEAD --stat"]],
-    [["sh", "-c", "cd repo && rg needle"]],
+    // A single-quoted literal may hold metacharacters; it stays allowed.
+    [["bash", "-lc", "rg -n 'a|b; c > $(d)' src"]],
     [["sed", "s/a/b/g", "file.txt"]],
-    [["sed", "-n", "s|a/b|c|p", "file.txt"]],
+    [["sed", "-n", "s,a/b,c,p", "file.txt"]],
     [["sed", "-ne", "10,20p", "file.txt"]],
     [["tree", "-L", "2", "src"]],
     [["yq", "-P", ".a", "file.yaml"]],
@@ -75,6 +76,22 @@ describe("isReadOnlyRerunCommand", () => {
     [["git", "diff", "--out=changes.patch"]],
     [["git", "grep", "-O", "needle"]],
     [["find", ".", "-fprint", "out.txt"]],
+    // t-0014 review 5539523750: the raw shell body is checked before any parsing,
+    // so a substitution inside a cd prefix is caught.
+    [["sh", "-c", 'cd "$(touch /tmp/tokenjuice-rerun-marker; printf .)" && cat input.txt']],
+    [["sh", "-c", "cd `touch /tmp/tokenjuice-rerun-marker` && cat input.txt"]],
+    [["bash", "-lc", "cat `ls`"]],
+    [["bash", "-lc", 'cat "$(make-list)"']],
+    [["bash", "-lc", 'cat "$HOME/notes.txt"']],
+    // One simple command only: chaining, background jobs and line breaks are refused.
+    [["sh", "-c", "cd repo && rg needle"]],
+    [["bash", "-lc", "cat a || rm b"]],
+    [["bash", "-lc", "cat a & rm b"]],
+    [["bash", "-lc", "cat a\nrm b"]],
+    [["bash", "-lc", "cat 'unterminated"]],
+    // Direct argv: the caller's quoting is unknown, so any metacharacter is refused.
+    [["rg", "a|b", "src"]],
+    [["cat", "$(rm x)"]],
     // Deny by default: any flag that is not on the command's allow-list.
     [["cat", "--some-new-flag", "file.txt"]],
     [["ls", "-la", "--unknown"]],

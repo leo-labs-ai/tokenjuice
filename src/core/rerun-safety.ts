@@ -1,6 +1,6 @@
 import { getCommandName } from "./command-identity.js";
 import { stripLeadingEnvAssignments, unwrapShellRunner } from "./command-match.js";
-import { isCompoundShellCommand, stripLeadingCdPrefix, tokenizeCommand } from "./command-shell.js";
+import { isCompoundShellCommand, tokenizeCommand } from "./command-shell.js";
 
 /**
  * Decides whether the wrap footer may suggest re-running a command with
@@ -236,8 +236,10 @@ const SED_LONG_FLAGS = new Set(["--quiet", "--silent", "--regexp-extended", "--n
 const SED_ADDRESS = /^(?:(?:\d+|\$)(?:,(?:\d+|\$))?)?/u;
 const SED_SUBSTITUTE_FLAGS = /^(?:[gpiI]|[1-9]\d*)*$/u;
 
-// Redirection, command substitution and process substitution can write or run anything.
-const UNSAFE_SHELL_SYNTAX = /[<>`]|\$\(/u;
+// Shell metacharacters: substitution, expansion, chaining, pipes, background
+// jobs, redirection, subshells, escapes, comments and line breaks. Any of them
+// outside a single-quoted literal means the command is not one simple command.
+const SHELL_METACHARACTERS = /[$`;&|<>()\\#\n\r]/u;
 
 /**
  * True when every option in args is on the grammar's allow-list. Operands are
@@ -297,7 +299,43 @@ function matchesFlagGrammar(args: readonly string[], grammar: FlagGrammar): bool
   return true;
 }
 
-/** Returns the argv that would actually run, or null when it cannot be judged safely. */
+/**
+ * True when text contains a shell metacharacter outside a single-quoted
+ * literal, or an unterminated quote. Double quotes do not protect anything:
+ * the shell still expands $ and backticks inside them.
+ */
+function hasUnquotedShellSyntax(text: string): boolean {
+  let quote: "'" | '"' | null = null;
+  for (const character of text) {
+    if (quote === "'") {
+      if (character === "'") {
+        quote = null;
+      }
+      continue;
+    }
+    if (character === "'" && quote === null) {
+      quote = "'";
+      continue;
+    }
+    if (character === '"') {
+      quote = quote === '"' ? null : '"';
+      continue;
+    }
+    if (SHELL_METACHARACTERS.test(character)) {
+      return true;
+    }
+  }
+  return quote !== null;
+}
+
+/**
+ * Returns the argv that would actually run, or null when it cannot be judged
+ * safely. The rule is: one simple command with no shell metacharacters. A
+ * shell body (sh -c BODY) is checked as the raw, unmodified string FIRST,
+ * before any parsing, so nothing (for example a cd prefix) is stripped
+ * before the check. Direct argv tokens are checked too, because the quoting
+ * the caller used is unknown.
+ */
 function getRerunArgv(argv: readonly string[]): string[] | null {
   const direct = stripLeadingEnvAssignments([...argv]);
   if (direct.length === 0) {
@@ -305,13 +343,21 @@ function getRerunArgv(argv: readonly string[]): string[] | null {
   }
   const shellBody = unwrapShellRunner({ argv: direct });
   if (shellBody === null) {
-    return getCommandName(direct) && isShellName(getCommandName(direct)!) ? null : direct;
+    const name = getCommandName(direct);
+    if (!name || isShellName(name) || argv.some((token) => SHELL_METACHARACTERS.test(token))) {
+      return null;
+    }
+    return direct;
   }
-  const body = stripLeadingCdPrefix(shellBody);
-  if (!body || isCompoundShellCommand(body) || UNSAFE_SHELL_SYNTAX.test(body)) {
+  const bodyIndex = argv.findIndex((token) => token.trim() === shellBody);
+  if (
+    hasUnquotedShellSyntax(shellBody)
+    || argv.some((token, index) => index !== bodyIndex && SHELL_METACHARACTERS.test(token))
+    || isCompoundShellCommand(shellBody)
+  ) {
     return null;
   }
-  const inner = stripLeadingEnvAssignments(tokenizeCommand(body));
+  const inner = stripLeadingEnvAssignments(tokenizeCommand(shellBody));
   return inner.length > 0 ? inner : null;
 }
 
