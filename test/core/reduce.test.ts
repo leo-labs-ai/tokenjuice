@@ -333,6 +333,16 @@ describe("reduceExecution", () => {
       expect(countTextChars(result.inlineText)).toBeLessThanOrEqual(1200);
     });
 
+    it("keeps a salient search line from the omitted middle", async () => {
+      const matches = Array.from({ length: 400 }, (_, index) => `src/file${index}.ts:${index + 1}:const value${index} = 1;`);
+      matches.splice(123, 0, "rg: src/private: Permission denied (os error 13)");
+      const result = await reduceExecution({ toolName: "exec", command: "rg -n value", combinedText: matches.join("\n"), exitCode: 0 });
+
+      expect(result.inlineText).toContain("rg: src/private: Permission denied (os error 13)");
+      expect(result.inlineText).toContain("src/file200.ts:201:");
+      expect(countTextChars(result.inlineText)).toBeLessThanOrEqual(1200);
+    });
+
     it("keeps failure output on the plain head/tail path", async () => {
       const result = await reduceExecution({ toolName: "exec", command: "custom-tool dump", combinedText: rows(1000).join("\n"), exitCode: 1 });
 
