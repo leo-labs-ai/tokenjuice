@@ -38,6 +38,7 @@ there are two independent boundaries:
 important implications:
 
 - `--raw` is the explicit escape hatch for reducer compaction.
+- the `tokenjuice wrap` footer only calls output "complete, authoritative" when every compaction kind removed noise without dropping content. Kinds that drop lines or chars (`head-tail-omission`, `middle-truncation`, `tail-truncation`, `hashed-middle-clip` and the other summary/omission kinds in `src/core/compaction-metadata.ts`) get a footer saying content was omitted, with the line count summed from the `... N lines omitted ...` markers when every kind counts its lines (`at least N` otherwise), and the saved raw output path when `--store` kept one.
 - `--raw` does not bypass capture limits; increase `--max-capture-bytes` when full capture is required.
 - frequent `generic/fallback` matches on a command family are a reducer-coverage signal, not a reason to make fallback "smarter".
 

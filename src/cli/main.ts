@@ -446,7 +446,10 @@ export function decorateWrapInlineText(result: WrapResult["result"], raw: boolea
   const footer = [
     "",
     "---",
-    buildWrapAuthoritativeFooter(result.rawRef?.path),
+    buildWrapAuthoritativeFooter(result.compaction, {
+      inlineText: result.inlineText,
+      ...(result.rawRef?.path ? { rawArtifactPath: result.rawRef.path } : {}),
+    }),
   ].join("\n");
   return `${result.inlineText}${footer}`;
 }
