@@ -20,13 +20,17 @@
 // Usage:
 //   node scripts/fidelity-bench.mjs [--dir DIR | --synthetic] [--seed N] [--sample N]
 //     [--src SRC_DIR] [--max-inline-chars N] [--before ISO_OR_MS] [--by-family]
-//     [--manifest-out FILE]
+//     [--manifest-out FILE] [--vocab N]
 //
 // The default directory (~/.pi/vanilla-agent/tokenjuice) grows while agents
 // run and is private. Pass --before (mtime cutoff) so two runs draw the same
 // pool; sampleSha in the output proves both runs read identical files.
 // --manifest-out writes the sampled names and content hashes (no content).
 // --synthetic builds a deterministic public corpus from the seed instead.
+// --vocab N (synthetic only, default 10) draws words from N generated words
+// instead of the fixed 10-word list. A small vocabulary makes every line look
+// alike, so a planted needle is the only outlier; use --vocab 250 to check that
+// a change does not just exploit that (overfit check).
 // --src benches another checkout's src/, for example a BASE commit:
 //   git archive <sha> src | tar -x -C /tmp/tj-base && node scripts/fidelity-bench.mjs --src /tmp/tj-base/src
 
@@ -48,6 +52,7 @@ function parseArgs(argv) {
     byFamily: false,
     before: undefined,
     manifestOut: undefined,
+    vocab: 10,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -64,6 +69,10 @@ function parseArgs(argv) {
     else if (arg === "--max-inline-chars") opts.maxInlineChars = Number(next());
     else if (arg === "--by-family") opts.byFamily = true;
     else if (arg === "--manifest-out") opts.manifestOut = resolve(next());
+    else if (arg === "--vocab") {
+      opts.vocab = Number(next());
+      if (!Number.isInteger(opts.vocab) || opts.vocab < 2) throw new Error("--vocab must be an integer >= 2");
+    }
     else if (arg === "--before") {
       const value = next();
       opts.before = /^\d+$/u.test(value) ? Number(value) : Date.parse(value);
@@ -119,11 +128,33 @@ function sampleDir(dir, count, seed, before) {
   };
 }
 
+const BASE_VOCAB = ["alpha", "beta", "gamma", "delta", "config", "handler", "result", "value", "index", "token"];
+
+// N distinct lowercase words of 2-4 syllables. The first 10 are BASE_VOCAB, so
+// --vocab 10 reproduces the original corpus exactly.
+function buildVocab(size, seed) {
+  if (size <= BASE_VOCAB.length) return BASE_VOCAB.slice(0, size);
+  const rng = createRng(seed ^ 0x2545f491);
+  const consonants = "bcdfghjklmnprstvwz";
+  const vowels = "aeiou";
+  const words = new Set(BASE_VOCAB);
+  while (words.size < size) {
+    const syllables = 2 + Math.floor(rng() * 3);
+    let word = "";
+    for (let i = 0; i < syllables; i += 1) {
+      word += consonants[Math.floor(rng() * consonants.length)] + vowels[Math.floor(rng() * vowels.length)];
+    }
+    words.add(word);
+  }
+  return [...words];
+}
+
 // Deterministic public corpus: read-like, search, diff, listing and log outputs.
-function syntheticCorpus(count, seed) {
+function syntheticCorpus(count, seed, vocabSize = BASE_VOCAB.length) {
   const rng = createRng(seed ^ 0x5bd1e995);
   const int = (max) => Math.floor(rng() * max);
-  const word = () => ["alpha", "beta", "gamma", "delta", "config", "handler", "result", "value", "index", "token"][int(10)];
+  const vocab = buildVocab(vocabSize, seed);
+  const word = () => vocab[int(vocab.length)];
   const path = () => "src/" + word() + "/" + word() + "-" + int(99) + ".ts";
   const makers = {
     read: (n) => Array.from({ length: n }, (_, i) => "  ".repeat(int(4)) + "const " + word() + i + " = " + word() + "(" + word() + ", " + int(1000) + ");"),
@@ -225,7 +256,7 @@ const rules = await loadBuiltinRules();
 const reduceOpts = opts.maxInlineChars ? { maxInlineChars: opts.maxInlineChars } : {};
 
 const corpus = opts.synthetic
-  ? { pool: opts.sample, files: syntheticCorpus(opts.sample, opts.seed) }
+  ? { pool: opts.sample, files: syntheticCorpus(opts.sample, opts.seed, opts.vocab) }
   : sampleDir(opts.dir, opts.sample, opts.seed, opts.before);
 const manifest = corpus.files.map(({ name, text }) => ({ name, sha256: sha(text), bytes: Buffer.byteLength(text) }));
 if (opts.manifestOut) writeFileSync(opts.manifestOut, JSON.stringify({ seed: opts.seed, files: manifest }, null, 2) + "\n");
@@ -263,6 +294,7 @@ const summary = {
   seed: opts.seed,
   ...(opts.before === undefined ? {} : { before: new Date(opts.before).toISOString() }),
   ...(opts.maxInlineChars ? { maxInlineChars: opts.maxInlineChars } : {}),
+  ...(opts.synthetic && opts.vocab !== BASE_VOCAB.length ? { vocab: opts.vocab } : {}),
   pool: corpus.pool,
   sampleSha: sha(manifest.map((entry) => entry.name + ":" + entry.sha256).join("\n")).slice(0, 16),
   ...summarize(rows),

@@ -1,4 +1,5 @@
 import { createCompactionMetadata, type CompactionKind, type CompactionMetadata } from "./compaction-metadata.js";
+import { selectSalientLines } from "./salient-lines.js";
 
 const ANSI_CSI_PATTERN = new RegExp(String.raw`\u001B\[[0-?]*[ -/]*[@-~]`, "g");
 const ANSI_OSC_PATTERN = new RegExp(String.raw`\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)`, "g");
@@ -164,6 +165,8 @@ const OMITTED_LINES_MARKER_PATTERN = /^\.\.\. (\d+) lines omitted \.\.\.$/u;
 // Upper bound for one "... N lines omitted ..." marker plus its newline.
 const OMITTED_LINES_MARKER_RESERVE = 32;
 const CENTRE_EXCERPT_SHARE = 0.2;
+// Share of the budget for salient lines picked from the omitted middle.
+const SALIENT_SHARE = 0.15;
 const HEAD_SHARE = 0.7;
 const MIN_PARTIAL_LINE_CHARS = 48;
 
@@ -216,11 +219,37 @@ function fitsInChars(lines: string[], maxChars: number): boolean {
   return true;
 }
 
+// Joins kept head lines, kept middle lines (by original index) and kept tail
+// lines, putting one "... N lines omitted ..." marker on every gap.
+function assembleKept(lines: string[], headLines: string[], middle: Map<number, string>, tailKeptStart: number, tailLines: string[]): { lines: string[]; omitted: boolean } {
+  const output = [...headLines];
+  let cursor = headLines.length;
+  let omitted = false;
+  for (const index of [...middle.keys()].sort((left, right) => left - right)) {
+    if (index > cursor) {
+      output.push(formatOmittedLines(countOmittedLines(lines.slice(cursor, index))));
+      omitted = true;
+    }
+    output.push(middle.get(index) ?? "");
+    cursor = index + 1;
+  }
+  if (tailKeptStart > cursor) {
+    output.push(formatOmittedLines(countOmittedLines(lines.slice(cursor, tailKeptStart))));
+    omitted = true;
+  }
+  output.push(...tailLines);
+  return { lines: output, omitted };
+}
+
 /**
  * Like headTail, but for output longer than maxChars it also keeps an excerpt
  * from the centre of the dropped range and fits the result into maxChars, so a
  * later middle clamp does not cut it.
  *
+ * - Salient lines of the dropped range (see salient-lines.ts: problem reports,
+ *   one-off layouts or words, lines unlike their neighbours) are kept first:
+ *   at most min(head, tail) lines and SALIENT_SHARE of the budget, markers
+ *   included. This also applies when the output already fits maxChars.
  * - The centre excerpt grows out from the middle line: at most min(head, tail)
  *   lines and CENTRE_EXCERPT_SHARE of the budget.
  * - When head, centre and tail fit, head and tail are exactly headTail's.
@@ -232,12 +261,8 @@ export function headCentreTail(lines: string[], head: number, tail: number, maxC
   if (head <= 0 || tail <= 0 || lines.length < 3) {
     return headTail(lines, head, tail);
   }
-  // Output that already fits keeps headTail's behaviour; the excerpt is for
-  // output that would otherwise be clamped.
-  if (fitsInChars(lines, maxChars)) {
-    return headTail(lines, head, tail);
-  }
   const gap = lines.length > head + tail;
+  const centreCap = Math.min(head, tail);
 
   const charCache = new Map<number, number>();
   const lineChars = (index: number): number => {
@@ -248,6 +273,23 @@ export function headCentreTail(lines: string[], head: number, tail: number, maxC
     }
     return chars;
   };
+  // A salient line costs its chars, its newline and the extra marker it splits off.
+  const salientCost = (index: number): number => lineChars(index) + 1 + OMITTED_LINES_MARKER_RESERVE;
+
+  // Output that already fits keeps headTail's head and tail and adds only the
+  // salient lines of the omitted middle; the centre excerpt is for output that
+  // would otherwise be clamped.
+  if (fitsInChars(lines, maxChars)) {
+    const plain = headTail(lines, head, tail);
+    if (!gap) {
+      return plain;
+    }
+    const picks = selectSalientLines(lines, head, lines.length - tail, centreCap, Math.floor(maxChars * SALIENT_SHARE), salientCost);
+    const kept = assembleKept(lines, lines.slice(0, head), new Map(picks.map((index) => [index, lines[index] ?? ""])), lines.length - tail, lines.slice(-tail));
+    return picks.length > 0 && fitsInChars(kept.lines, maxChars)
+      ? { lines: kept.lines, compaction: createCompactionMetadata("head-tail-omission") }
+      : plain;
+  }
 
   const middle = Math.floor(lines.length / 2);
   const headEnd = gap ? head : middle;
@@ -255,13 +297,17 @@ export function headCentreTail(lines: string[], head: number, tail: number, maxC
   const seed = Math.min(Math.max(middle, headEnd), tailStart - 1);
   const available = Math.max(0, maxChars - 2 * OMITTED_LINES_MARKER_RESERVE);
 
+  const salientPicks = gap
+    ? selectSalientLines(lines, headEnd, tailStart, centreCap, Math.floor(available * SALIENT_SHARE), salientCost)
+    : [];
+  const salientChars = salientPicks.reduce((sum, index) => sum + salientCost(index), 0);
+
   // Centre excerpt [centreStart, centreEnd), grown alternately below and above the seed.
   const centreBudget = Math.floor(available * CENTRE_EXCERPT_SHARE);
   const seedLine = clipLine(lines[seed] ?? "", centreBudget, false);
   let centreChars = countTextChars(seedLine.text);
   let centreStart = seed;
   let centreEnd = seed + 1;
-  const centreCap = Math.min(head, tail);
   let growDown = true;
   let growUp = true;
   while ((growDown || growUp) && centreEnd - centreStart < centreCap) {
@@ -283,7 +329,7 @@ export function headCentreTail(lines: string[], head: number, tail: number, maxC
     }
   }
 
-  const remaining = Math.max(0, available - centreChars);
+  const remaining = Math.max(0, available - centreChars - salientChars);
   let headFull = 0;
   for (let index = 0; index < headEnd; index += 1) {
     headFull += lineChars(index) + 1;
@@ -340,18 +386,13 @@ export function headCentreTail(lines: string[], head: number, tail: number, maxC
     }
   }
 
-  const omittedBefore = lines.slice(headLines.length, centreStart);
-  const omittedAfter = lines.slice(centreEnd, tailKeptStart);
-  const centreLines = lines.slice(centreStart, centreEnd).map((line, offset) => (centreStart + offset === seed ? seedLine.text : line));
-  const output = [
-    ...headLines,
-    ...(omittedBefore.length > 0 ? [formatOmittedLines(countOmittedLines(omittedBefore))] : []),
-    ...centreLines,
-    ...(omittedAfter.length > 0 ? [formatOmittedLines(countOmittedLines(omittedAfter))] : []),
-    ...tailLines,
-  ];
+  const middleLines = new Map<number, string>(salientPicks.map((index) => [index, lines[index] ?? ""]));
+  for (let index = centreStart; index < centreEnd; index += 1) {
+    middleLines.set(index, index === seed ? seedLine.text : lines[index] ?? "");
+  }
+  const { lines: output, omitted } = assembleKept(lines, headLines, middleLines, tailKeptStart, tailLines);
   const kinds: CompactionKind[] = [
-    ...(omittedBefore.length > 0 || omittedAfter.length > 0 ? ["head-tail-omission" as const] : []),
+    ...(omitted ? ["head-tail-omission" as const] : []),
     ...(clipped ? ["middle-truncation" as const] : []),
   ];
   return kinds.length > 0 ? { lines: output, compaction: createCompactionMetadata(...kinds) } : { lines: output };

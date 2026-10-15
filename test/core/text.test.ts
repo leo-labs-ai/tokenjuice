@@ -142,6 +142,48 @@ describe("text helpers", () => {
       expect(accountedLines(result.lines)).toBe(5);
     });
 
+    it("keeps a salient line from the omitted middle of long output within the budget", () => {
+      const lines = rows(1000, 40);
+      lines[173] = "error: disk quota exceeded while writing cache";
+      const result = headCentreTail(lines, 8, 8, 1200);
+
+      expect(countTextChars(result.lines.join("\n"))).toBeLessThanOrEqual(1200);
+      expect(result.lines).toContain(lines[173]);
+      expect(result.lines).toContain(lines[500]);
+      expect(result.lines.slice(-8)).toEqual(lines.slice(-8));
+      expect(omittedCounts(result.lines)).toHaveLength(3);
+      expect(accountedLines(result.lines)).toBe(1000);
+    });
+
+    it("adds salient middle lines to headTail when the lines already fit", () => {
+      const lines = rows(30, 2);
+      lines[14] = "WARNING: retry budget exhausted";
+      const result = headCentreTail(lines, 8, 8, 1200);
+
+      expect(result.lines).toEqual([
+        ...lines.slice(0, 8),
+        "... 6 lines omitted ...",
+        lines[14],
+        "... 7 lines omitted ...",
+        ...lines.slice(-8),
+      ]);
+      expect(result.compaction).toEqual({ authoritative: true, kinds: ["head-tail-omission"] });
+    });
+
+    it("caps salient lines at min(head, tail) and their share of the budget", () => {
+      const lines = rows(1000, 40);
+      for (const index of [100, 200, 300, 400, 600, 700, 800, 900]) {
+        lines[index] = `failure ${index}: unexpected token in stream ${"q".repeat(index % 7)}`;
+      }
+      const result = headCentreTail(lines, 3, 3, 1200);
+      const kept = result.lines.filter((line) => line.startsWith("failure "));
+
+      expect(countTextChars(result.lines.join("\n"))).toBeLessThanOrEqual(1200);
+      expect(kept.length).toBeGreaterThan(0);
+      expect(kept.length).toBeLessThanOrEqual(3);
+      expect(accountedLines(result.lines)).toBe(1000);
+    });
+
     it("falls back to headTail for one-sided or tiny inputs", () => {
       const lines = rows(100, 40);
       expect(headCentreTail(lines, 8, 0, 400)).toEqual(headTail(lines, 8, 0));
