@@ -162,16 +162,17 @@ describe("compactBashResult", () => {
     });
   });
 
-  it("allows large document-shaped file inspections through the summary reducer", async () => {
+  it("keeps large document-shaped file inspections raw", async () => {
+    const visibleText = [
+      "# Review",
+      "intro",
+      "## Evidence",
+      ...Array.from({ length: 260 }, (_, index) => `paragraph ${index} ${"x".repeat(40)}`),
+    ].join("\n");
     const outcome = await compactBashResult({
       source: "pi",
       command: "sed -n '1,260p' notes.txt",
-      visibleText: [
-        "# Review",
-        "intro",
-        "## Evidence",
-        ...Array.from({ length: 260 }, (_, index) => `paragraph ${index} ${"x".repeat(40)}`),
-      ].join("\n"),
+      visibleText,
       inspectionPolicy: "allow-safe-inventory",
       minSavedCharsAny: 8,
       genericFallbackMinSavedChars: 120,
@@ -180,13 +181,13 @@ describe("compactBashResult", () => {
     });
 
     expect(outcome).toMatchObject({
-      action: "rewrite",
-      result: {
-        classification: {
-          matchedReducer: "generic/large-document-summary",
-        },
-      },
+      action: "keep",
+      reason: "file-content-inspection-command",
     });
+    const kept = expectKeep(outcome);
+    expect(kept.rawText).toContain("# Review");
+    expect(kept.rawText).toContain("paragraph 0");
+    expect(kept.rawText).toBe(visibleText);
   });
 
   it("keeps tree output raw under the safe-inventory inspection policy", async () => {

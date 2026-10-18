@@ -1,5 +1,4 @@
 import { getInspectionCommandSkipReason, getSafeRepositoryInventorySourceArgv } from "../inventory-safety.js";
-import { buildInspectionSummary } from "../reduce-inspection-summary.js";
 import { reduceExecution } from "../reduce.js";
 import { getCompactionSkipReason, type RewritePolicyOptions } from "./rewrite-policy.js";
 
@@ -57,15 +56,7 @@ export function getOutputAwareInspectionSkipReason(
   executionInput: ToolExecutionInput,
 ): InspectionCommandSkipReason | null {
   const command = executionInput.command ?? "";
-  const rawText = executionInput.combinedText ?? "";
-  const inspectionSkipReason = getInspectionCommandSkipReason(command, policy);
-  if (
-    inspectionSkipReason === "file-content-inspection-command"
-    && buildInspectionSummary(executionInput, rawText)
-  ) {
-    return null;
-  }
-  return inspectionSkipReason;
+  return getInspectionCommandSkipReason(command, policy);
 }
 
 export async function compactBashResult(input: CompactBashResultInput): Promise<CompactBashResultOutput> {
