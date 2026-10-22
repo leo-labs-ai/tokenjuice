@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -34,17 +34,6 @@ async function createTempDir(): Promise<string> {
 }
 
 const SOURCE_RUNTIME_ASSET_PATH = new URL("../../src/hosts/pi/extension/runtime.js", import.meta.url);
-
-async function artifactDirMtime(dir: string): Promise<number | undefined> {
-  try {
-    return (await stat(dir)).mtimeMs;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return undefined;
-    }
-    throw error;
-  }
-}
 
 async function readOptional(path: string | URL): Promise<string | undefined> {
   try {
@@ -430,9 +419,9 @@ describe("installPiExtension", () => {
       `,
     );
 
+    // The live directory may hold very many files and other processes may write to it while this
+    // test runs, so check it by the artifact's own name instead of listing it or comparing mtimes.
     const defaultArtifactDir = join(homedir(), ".tokenjuice", "artifacts");
-    // The live directory is hundreds of thousands of files. A name listing exceeds the test timeout.
-    const defaultBefore = await artifactDirMtime(defaultArtifactDir);
 
     const result = await handlers.get("tool_result")?.(
       {
@@ -461,7 +450,7 @@ describe("installPiExtension", () => {
     const rawName = (await readdir(join(home, "artifacts"))).find((name) => /^tj_.*\.txt$/u.test(name));
     expect(rawName).toBeDefined();
     expect(await readFile(join(home, "artifacts", rawName ?? ""), "utf8")).toContain("On branch feat/pi-extension");
-    expect(await artifactDirMtime(defaultArtifactDir)).toBe(defaultBefore);
+    expect(await readOptional(join(defaultArtifactDir, rawName ?? ""))).toBeUndefined();
     expect(await readOptional(markerPath)).toBeUndefined();
   });
 
