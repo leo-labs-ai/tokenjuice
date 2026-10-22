@@ -1602,25 +1602,24 @@ describe("reduceExecution", () => {
     expect(result.compaction?.authoritative).toBe(false);
   });
 
-  it("marks structured inspection summaries as authoritative compaction", async () => {
+  it("does not mark large document-shaped file inspections as authoritative compaction", async () => {
+    const combinedText = [
+      "# Review",
+      "intro",
+      "## Evidence",
+      ...Array.from({ length: 260 }, (_, index) => `paragraph ${index} ${"x".repeat(40)}`),
+    ].join("\n");
     const result = await reduceExecution({
       toolName: "exec",
       command: "sed -n '1,260p' notes.txt",
       argv: ["sed", "-n", "1,260p", "notes.txt"],
-      combinedText: [
-        "# Review",
-        "intro",
-        "## Evidence",
-        ...Array.from({ length: 260 }, (_, index) => `paragraph ${index} ${"x".repeat(40)}`),
-      ].join("\n"),
+      combinedText,
       exitCode: 0,
     });
 
-    expect(result.classification.matchedReducer).toBe("generic/large-document-summary");
-    expect(result.compaction).toEqual({
-      authoritative: true,
-      kinds: ["inspection-large-document-summary", "head-tail-omission"],
-    });
+    expect(result.classification.matchedReducer).toBe("generic/fallback");
+    expect(result.inlineText).toBe(combinedText);
+    expect(result.compaction).toEqual({ authoritative: false, kinds: [] });
   });
 
   it("keeps full git diff content and facts when noOmit is enabled", async () => {
@@ -2129,24 +2128,93 @@ describe("reduceExecution", () => {
     expect(result.inlineText).not.toContain("\"node_modules/pkg-79\"");
   });
 
-  it("summarizes large document-shaped file inspections without path allowlists", async () => {
+  it("keeps large document-shaped file inspections raw", async () => {
+    const combinedText = [
+      "# Review",
+      "intro",
+      "## Evidence",
+      ...Array.from({ length: 260 }, (_, index) => `paragraph ${index} ${"x".repeat(40)}`),
+    ].join("\n");
     const result = await reduceExecution({
       toolName: "exec",
       command: "sed -n '1,260p' notes.txt",
       argv: ["sed", "-n", "1,260p", "notes.txt"],
-      combinedText: [
-        "# Review",
-        "intro",
-        "## Evidence",
-        ...Array.from({ length: 260 }, (_, index) => `paragraph ${index} ${"x".repeat(40)}`),
-      ].join("\n"),
+      combinedText,
       exitCode: 0,
     });
 
-    expect(result.classification.matchedReducer).toBe("generic/large-document-summary");
-    expect(result.inlineText).toContain("large document summary");
-    expect(result.inlineText).toContain("- # Review");
-    expect(result.inlineText).toContain("- ## Evidence");
+    expect(result.classification.matchedReducer).toBe("generic/fallback");
+    expect(result.inlineText).toBe(combinedText);
+  });
+
+  it("keeps large await-shaped file inspections raw", async () => {
+    const line = '    await client.request("alpha beta gamma delta epsilon zeta eta theta")';
+    const source = Array.from({ length: 90 }, () => line).join("\n");
+
+    expect(line.trim().length).toBeGreaterThanOrEqual(50);
+    expect(source.length).toBeGreaterThan(4_000);
+    expect(source.split("\n").length).toBeGreaterThanOrEqual(40);
+
+    const result = await reduceExecution({
+      toolName: "exec",
+      command: "cat src/app.ts",
+      argv: ["cat", "src/app.ts"],
+      combinedText: source,
+      exitCode: 0,
+    });
+
+    expect(result.classification.matchedReducer).toBe("generic/fallback");
+    expect(result.inlineText).toBe(source);
+  });
+
+  it("keeps a large python file whose hash comments look like headings raw", async () => {
+    const source = [
+      "# Configure the outbound client before the first request is sent",
+      "def fetch(name):",
+      "    return name",
+      "# Record evidence after the upstream request returns to the caller",
+      ...Array.from({ length: 80 }, (_, index) => `value_${index} = "payload ${index} ${"x".repeat(40)}"`),
+    ].join("\n");
+
+    expect(source.length).toBeGreaterThan(4_000);
+    expect(source.split("\n").length).toBeGreaterThanOrEqual(40);
+    expect(source.split("\n").filter((line) => /^#{1,6}\s+\S/u.test(line.trim())).length).toBeGreaterThanOrEqual(2);
+
+    const result = await reduceExecution({
+      toolName: "exec",
+      command: "cat src/client.py",
+      argv: ["cat", "src/client.py"],
+      combinedText: source,
+      exitCode: 0,
+    });
+
+    expect(result.classification.matchedReducer).toBe("generic/fallback");
+    expect(result.inlineText).toBe(source);
+  });
+
+  it("keeps a large yaml file whose hash comments look like headings raw", async () => {
+    const source = [
+      "# service name for the billing worker",
+      "name: billing",
+      "# retry budget for the upstream call",
+      "retries: 3",
+      ...Array.from({ length: 80 }, (_, index) => `note_${index}: "payload ${index} ${"y".repeat(40)}"`),
+    ].join("\n");
+
+    expect(source.length).toBeGreaterThan(4_000);
+    expect(source.split("\n").length).toBeGreaterThanOrEqual(40);
+    expect(source.split("\n").filter((line) => /^#{1,6}\s+\S/u.test(line.trim())).length).toBeGreaterThanOrEqual(2);
+
+    const result = await reduceExecution({
+      toolName: "exec",
+      command: "cat deploy/service.yaml",
+      argv: ["cat", "deploy/service.yaml"],
+      combinedText: source,
+      exitCode: 0,
+    });
+
+    expect(result.classification.matchedReducer).toBe("generic/fallback");
+    expect(result.inlineText).toBe(source);
   });
 
   it("keeps large code-shaped file inspections raw", async () => {

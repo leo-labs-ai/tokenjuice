@@ -5,7 +5,6 @@ export type CompactionKind =
   | "hashed-middle-clip"
   | "git-diff-hunk-clip"
   | "inspection-package-lock-summary"
-  | "inspection-large-document-summary"
   | "repeated-emoji-banner-omission"
   | "github-actions-command-list-omission"
   | "github-actions-log-signal-filter"

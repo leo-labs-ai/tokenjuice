@@ -72,6 +72,8 @@ for contributor guidance on introducing a new host integration, see `docs/integr
 host adapters choose an inspection policy before calling the shared compactor. the Codex, Claude Code, and pi adapters use the safe-inventory policy:
 
 - exact file-content reads stay raw (`cat`, `sed`, `head`, `tail`, `nl`, `bat`, `jq`, `yq`)
+- size and prose shape do not change this. a file read over 4,000 characters stays raw
+- a command whose text contains `package-lock.json` is the exception. it may be replaced by the package-lock summary
 - standalone repository inventory commands can compact when they are inventory-only (`find`, `ls`, `rg --files`, `git ls-files`, `fd`)
 - inventory pipelines compact only when downstream commands are structural stdin transforms (`sort`, `head`, `tail`, `uniq`)
 - source inventory commands that execute other commands, such as `find ... -exec ...` or `fd --exec ...`, stay raw
