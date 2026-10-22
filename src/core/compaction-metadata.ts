@@ -5,7 +5,6 @@ export type CompactionKind =
   | "hashed-middle-clip"
   | "git-diff-hunk-clip"
   | "inspection-package-lock-summary"
-  | "inspection-large-document-summary"
   | "github-actions-command-list-omission"
   | "github-actions-log-signal-filter"
   | "github-status-check-rollup-omission";
@@ -33,7 +32,6 @@ const COMPACTION_KIND_EFFECT: Record<CompactionKind, "omits" | "noise-only"> = {
   "hashed-middle-clip": "omits",
   "git-diff-hunk-clip": "omits",
   "inspection-package-lock-summary": "omits",
-  "inspection-large-document-summary": "omits",
   "github-actions-command-list-omission": "omits",
   "github-actions-log-signal-filter": "omits",
   "github-status-check-rollup-omission": "omits",
