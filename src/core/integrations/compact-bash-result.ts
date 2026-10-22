@@ -1,6 +1,6 @@
 import { getInspectionCommandSkipReason, getSafeRepositoryInventorySourceArgv } from "../inventory-safety.js";
 import { readNoOmissionFromEnv } from "../env.js";
-import { shouldRecordStats } from "../artifacts.js";
+import { shouldRecordStats, storeArtifact } from "../artifacts.js";
 import { reduceExecution } from "../reduce.js";
 import { getCompactionSkipReason, type RewritePolicyOptions } from "./rewrite-policy.js";
 
@@ -19,6 +19,7 @@ export type CompactBashResultInput = {
   allowOmit?: boolean;
   storeRaw?: boolean;
   recordStats?: boolean;
+  storeDir?: string;
   metadata?: Record<string, unknown>;
   inspectionPolicy?: InspectionCommandPolicy;
   /** @deprecated use inspectionPolicy instead. */
@@ -107,12 +108,21 @@ export async function compactBashResult(input: CompactBashResultInput): Promise<
     };
   }
 
+  const storeDir = typeof input.storeDir === "string" && input.storeDir.trim()
+    ? input.storeDir.trim()
+    : undefined;
+  const recordStats = input.recordStats ?? shouldRecordStats();
   const options: ReduceOptions = {
     ...(typeof input.cwd === "string" && input.cwd.trim() ? { cwd: input.cwd } : {}),
     ...(typeof input.maxInlineChars === "number" ? { maxInlineChars: input.maxInlineChars } : {}),
     ...(input.noOmit || (!input.allowOmit && readNoOmissionFromEnv()) ? { noOmit: true } : {}),
-    recordStats: input.recordStats ?? shouldRecordStats(),
-    ...(input.storeRaw ? { store: true } : {}),
+    // store:true inside reduceExecution writes before this function can keep the output, so a
+    // storeRaw caller stores below, only after the rewrite decision. A keep from a storeRaw
+    // caller then leaves no raw file and no stats entry: recordStats stays off for that call
+    // as well. Callers without storeRaw keep the stats policy unchanged: an explicit
+    // input.recordStats wins, otherwise stats are on unless TOKENJUICE_STATS disables them.
+    recordStats: input.storeRaw ? false : recordStats,
+    ...(storeDir ? { storeDir } : {}),
   };
 
   const result = await reduceExecution(executionInput, options);
@@ -127,10 +137,33 @@ export async function compactBashResult(input: CompactBashResultInput): Promise<
     };
   }
 
+  if (!input.storeRaw) {
+    return {
+      action: "rewrite",
+      rawText,
+      usedTrustedFullText,
+      result,
+    };
+  }
+
+  const rawRef = await storeArtifact(
+    {
+      input: executionInput,
+      rawText,
+      classification: result.classification,
+      stats: result.stats,
+      recordStats,
+    },
+    storeDir,
+  );
+
   return {
     action: "rewrite",
     rawText,
     usedTrustedFullText,
-    result,
+    result: {
+      ...result,
+      rawRef,
+    },
   };
 }
