@@ -1,5 +1,10 @@
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
+import { listArtifactMetadata } from "../../../src/core/artifacts.js";
 import { compactBashResult } from "../../../src/core/integrations/compact-bash-result.js";
 
 type CompactBashResultOutcome = Awaited<ReturnType<typeof compactBashResult>>;
@@ -296,6 +301,84 @@ describe("compactBashResult", () => {
 
     const kept = expectKeep(outcome);
     expect(kept.reason).toBe("generic-compound-command");
+  });
+
+  it("stores raw bytes in storeDir only after a rewrite", async () => {
+    const storeDir = await mkdtemp(join(tmpdir(), "tokenjuice-store-raw-"));
+    const stray = new Set<string>();
+    const rawText = [
+      "On branch feat/pi-extension",
+      "",
+      "Changes not staged for commit:",
+      "\tmodified:   src/hosts/pi/extension/runtime.ts",
+      "\tmodified:   src/hosts/pi/index.ts",
+      "",
+      "no changes added to commit",
+    ].join("\n");
+    const noteStray = (outcome: CompactBashResultOutcome) => {
+      const ref = outcome.result?.rawRef;
+      if (!ref?.path || ref.path.startsWith(storeDir)) {
+        return;
+      }
+      stray.add(ref.path);
+      if (ref.metadataPath) {
+        stray.add(ref.metadataPath);
+      }
+    };
+    try {
+      const outcome = await compactBashResult({
+        source: "pi",
+        command: "git status",
+        visibleText: rawText,
+        storeRaw: true,
+        storeDir,
+        maxInlineChars: 1200,
+        inspectionPolicy: "allow-safe-inventory",
+        minSavedCharsAny: 8,
+        genericFallbackMinSavedChars: 120,
+        genericFallbackMaxRatio: 0.75,
+        skipGenericFallbackForCompoundCommands: true,
+      });
+      noteStray(outcome);
+
+      const rewritten = expectRewrite(outcome);
+      expect(rewritten.result.rawRef?.id).toMatch(/^tj_[0-9a-f-]{12}$/i);
+      const id = rewritten.result.rawRef?.id ?? "";
+      const rawPath = join(storeDir, `${id}.txt`);
+      expect(rewritten.result.rawRef?.path).toBe(rawPath);
+      expect(await readFile(rawPath, "utf8")).toBe(rawText);
+
+      const namesBeforeKeep = (await readdir(storeDir)).sort();
+      const statsIdsBeforeKeep = (await listArtifactMetadata(storeDir)).map((entry) => entry.id).sort();
+      const keptOutcome = await compactBashResult({
+        source: "pi",
+        command: "cd /repo && echo hi | head -c 4",
+        visibleText: Array.from({ length: 18 }, (_, index) => `line ${index + 1} ${"x".repeat(24)}`).join("\n"),
+        storeRaw: true,
+        storeDir,
+        minSavedCharsAny: 8,
+        genericFallbackMinSavedChars: 120,
+        genericFallbackMaxRatio: 0.75,
+        skipGenericFallbackForCompoundCommands: true,
+      });
+      noteStray(keptOutcome);
+      const kept = expectKeep(keptOutcome);
+      expect(kept.reason).toBe("generic-compound-command");
+      expect(kept.result?.rawRef).toBeUndefined();
+      const namesAfterKeep = (await readdir(storeDir)).sort();
+      expect(namesAfterKeep).toEqual(namesBeforeKeep);
+      // storeRaw keep: no raw stored, and no stats entry for this call.
+      expect({
+        statsIds: (await listArtifactMetadata(storeDir)).map((entry) => entry.id).sort(),
+        rawTxt: namesAfterKeep.filter((name) => name.endsWith(".txt")),
+      }).toEqual({
+        statsIds: statsIdsBeforeKeep,
+        rawTxt: namesBeforeKeep.filter((name) => name.endsWith(".txt")),
+      });
+    } finally {
+      await Promise.all([...stray].map((path) => rm(path, { force: true })));
+      await rm(storeDir, { recursive: true, force: true });
+    }
   });
 
 });
