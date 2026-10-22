@@ -2256,7 +2256,8 @@ describe("runCodexPostToolUseHook", () => {
 
   it("records metadata-only stats for immediate skip paths", async () => {
     const home = await createTempDir();
-    const artifactDir = process.env.TOKENJUICE_ARTIFACT_DIR;
+    const artifactDir = await createTempDir();
+    process.env.TOKENJUICE_ARTIFACT_DIR = artifactDir;
     process.env.CODEX_HOME = home;
     process.env.HOME = home;
 
