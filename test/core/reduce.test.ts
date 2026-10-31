@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { findMatchingRule, getArtifact, listArtifactMetadata, reduceExecution, statsArtifacts } from "../../src/index.js";
+import { buildWrapAuthoritativeFooter } from "../../src/core/compaction-metadata.js";
+import { reduceExecutionWithRules } from "../../src/core/reduce.js";
 import { clipMiddleWithHash } from "../../src/core/reduce-utils.js";
+import { loadBuiltinRules } from "../../src/core/rules.js";
 import { countTextChars } from "../../src/core/text.js";
 
 const tempDirs: string[] = [];
@@ -1267,6 +1270,23 @@ describe("reduceExecution", () => {
     expect(result.inlineText).toBe("Deleted branch fix/cd-prefixed-raw-bypass-main (was 76b6858).");
     expect(result.stats.reducedChars).toBeLessThan(result.stats.rawChars);
     expect(result.compaction?.authoritative).toBe(false);
+  });
+
+  it("does not report omission when salience selection retains every content line", async () => {
+    const lines = Array.from({ length: 17 }, (_, index) => `routine request ${index}`);
+    lines[8] = "WARNING: disk quota exhausted";
+    const result = await reduceExecutionWithRules({
+      toolName: "exec",
+      command: "custom-tool dump",
+      combinedText: `${lines.join("\n")}\n`,
+      exitCode: 0,
+    }, await loadBuiltinRules());
+
+    expect(result.inlineText).toBe(lines.join("\n"));
+    expect(result.stats.rawChars - result.stats.reducedChars).toBe(1);
+    expect(result.compaction).toEqual({ authoritative: false, kinds: [] });
+    expect(buildWrapAuthoritativeFooter(result.compaction, { inlineText: result.inlineText }))
+      .toContain("This is the complete, authoritative output");
   });
 
   it("does not mark large document-shaped file inspections as authoritative compaction", async () => {

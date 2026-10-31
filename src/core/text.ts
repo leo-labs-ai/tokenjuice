@@ -287,7 +287,7 @@ export function headCentreTail(lines: string[], head: number, tail: number, maxC
     const picks = selectSalientLines(lines, head, lines.length - tail, centreCap, Math.floor(maxChars * SALIENT_SHARE), salientCost);
     const kept = assembleKept(lines, lines.slice(0, head), new Map(picks.map((index) => [index, lines[index] ?? ""])), lines.length - tail, lines.slice(-tail));
     return picks.length > 0 && fitsInChars(kept.lines, maxChars)
-      ? { lines: kept.lines, compaction: createCompactionMetadata("head-tail-omission") }
+      ? { lines: kept.lines, ...(kept.omitted ? { compaction: createCompactionMetadata("head-tail-omission") } : {}) }
       : plain;
   }
 
