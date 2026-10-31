@@ -11,11 +11,17 @@ const tempDirs: string[] = [];
 const PACKAGE_VERSION = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version as string;
 const originalHome = process.env.HOME;
 const originalPath = process.env.PATH;
+const originalArtifactDir = process.env.TOKENJUICE_ARTIFACT_DIR;
 
 afterEach(async () => {
   delete process.env.CODEX_HOME;
   process.env.HOME = originalHome;
   process.env.PATH = originalPath;
+  if (originalArtifactDir === undefined) {
+    delete process.env.TOKENJUICE_ARTIFACT_DIR;
+  } else {
+    process.env.TOKENJUICE_ARTIFACT_DIR = originalArtifactDir;
+  }
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
@@ -1012,7 +1018,8 @@ describe("runCodexPostToolUseHook", () => {
 
   it("records metadata-only stats for immediate skip paths", async () => {
     const home = await createTempDir();
-    const artifactDir = process.env.TOKENJUICE_ARTIFACT_DIR;
+    const artifactDir = await createTempDir();
+    process.env.TOKENJUICE_ARTIFACT_DIR = artifactDir;
     process.env.CODEX_HOME = home;
     process.env.HOME = home;
 
