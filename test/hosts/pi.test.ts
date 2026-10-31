@@ -1,5 +1,5 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -10,6 +10,7 @@ import { doctorPiExtension, installPiExtension } from "../../src/index.js";
 const tempDirs: string[] = [];
 const originalPath = process.env.PATH;
 const originalPiAgentDir = process.env.PI_CODING_AGENT_DIR;
+const originalArtifactDir = process.env.TOKENJUICE_ARTIFACT_DIR;
 
 afterEach(async () => {
   process.env.PATH = originalPath;
@@ -17,6 +18,11 @@ afterEach(async () => {
     delete process.env.PI_CODING_AGENT_DIR;
   } else {
     process.env.PI_CODING_AGENT_DIR = originalPiAgentDir;
+  }
+  if (originalArtifactDir === undefined) {
+    delete process.env.TOKENJUICE_ARTIFACT_DIR;
+  } else {
+    process.env.TOKENJUICE_ARTIFACT_DIR = originalArtifactDir;
   }
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
@@ -54,6 +60,9 @@ async function installLocalTestExtension(
   process.env.PATH = "";
   const agentDir = join(home, ".pi-agent");
   process.env.PI_CODING_AGENT_DIR = agentDir;
+  const artifactDir = join(home, "artifacts");
+  process.env.TOKENJUICE_ARTIFACT_DIR = artifactDir;
+  await mkdir(artifactDir, { recursive: true });
 
   await mkdir(join(home, "dist", "cli"), { recursive: true });
   await writeFile(localCliPath, scriptSource, "utf8");
@@ -410,6 +419,10 @@ describe("installPiExtension", () => {
       `,
     );
 
+    // The live directory may hold very many files and other processes may write to it while this
+    // test runs, so check it by the artifact's own name instead of listing it or comparing mtimes.
+    const defaultArtifactDir = join(homedir(), ".tokenjuice", "artifacts");
+
     const result = await handlers.get("tool_result")?.(
       {
         toolName: "bash",
@@ -433,6 +446,11 @@ describe("installPiExtension", () => {
 
     expect(result?.content[0].text).toContain("M: src/hosts/pi/extension/runtime.ts");
     expect(result?.content[0].text).toContain("tokenjuice compacted bash output");
+    expect(result?.content[0].text).toContain("raw artifact: tj_");
+    const rawName = (await readdir(join(home, "artifacts"))).find((name) => /^tj_.*\.txt$/u.test(name));
+    expect(rawName).toBeDefined();
+    expect(await readFile(join(home, "artifacts", rawName ?? ""), "utf8")).toContain("On branch feat/pi-extension");
+    expect(await readOptional(join(defaultArtifactDir, rawName ?? ""))).toBeUndefined();
     expect(await readOptional(markerPath)).toBeUndefined();
   });
 

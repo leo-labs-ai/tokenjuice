@@ -41,11 +41,6 @@ const OMITTING_CASES: Array<{ kind: CompactionKind; inlineText: string; count: s
   },
   { kind: "inspection-package-lock-summary", inlineText: "package-lock summary: 812 packages", count: "content was omitted" },
   {
-    kind: "inspection-large-document-summary",
-    inlineText: "large document summary: 900 lines, 60000 chars\nexcerpt:\n... 850 lines omitted ...",
-    count: "at least 850 lines were omitted",
-  },
-  {
     kind: "github-actions-command-list-omission",
     inlineText: "- npm ci\n... 14 commands omitted ...\n- npm test",
     count: "content was omitted",
@@ -79,6 +74,15 @@ describe("wrap footer accuracy", () => {
     expect(footer).toContain(`The full raw output is saved at ${RAW_PATH}`);
     expect(footer).not.toContain("not retrievable");
     expect(footer).not.toContain("complete, authoritative");
+  });
+
+  it("says at least when a non-line-counted kind still carries an omission marker", () => {
+    const footer = footerOf(decorateWrapInlineText(
+      compactedResult(["middle-truncation"], "kept\n... 850 lines omitted ...\nkept"),
+      false,
+    ));
+
+    expect(footer).toContain("Output compacted: at least 850 lines were omitted, so this is not the complete output.");
   });
 
   it("suggests a --raw re-run only for read-only commands", () => {
