@@ -70,10 +70,10 @@
   },
   "devDependencies": {
     "@types/node": "^24.7.0",
-    "esbuild": "^0.25.11",
+    "esbuild": "^0.25.12",
     "oxlint": "^1.61.0",
     "publint": "^0.3.18",
     "typescript": "^7.0.2",
-    "vitest": "^3.2.7"
+    "vitest": "^4.1.12"
   }
 }
