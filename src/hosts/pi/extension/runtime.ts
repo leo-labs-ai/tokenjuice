@@ -186,6 +186,7 @@ export function createTokenjuicePiExtension(config: PiExtensionRuntimeConfig) {
         return undefined;
       }
 
+      const artifactDir = process.env.TOKENJUICE_ARTIFACT_DIR?.trim();
       let outcome;
       try {
         outcome = await compactBashResult({
@@ -201,6 +202,8 @@ export function createTokenjuicePiExtension(config: PiExtensionRuntimeConfig) {
           genericFallbackMinSavedChars: GENERIC_FALLBACK_MIN_SAVED_CHARS,
           genericFallbackMaxRatio: GENERIC_FALLBACK_MAX_RATIO,
           skipGenericFallbackForCompoundCommands: true,
+          storeRaw: true,
+          ...(artifactDir ? { storeDir: artifactDir } : {}),
           metadata: {
             source: "pi-tool-result",
           },

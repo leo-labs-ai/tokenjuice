@@ -38,6 +38,7 @@ there are two independent boundaries:
 important implications:
 
 - `--raw` is the explicit escape hatch for reducer compaction.
+- the `tokenjuice wrap` footer only calls output "complete, authoritative" when every compaction kind removed noise without dropping content. Kinds that drop lines or chars (`head-tail-omission`, `middle-truncation`, `tail-truncation`, `hashed-middle-clip` and the other summary/omission kinds in `src/core/compaction-metadata.ts`) get a footer saying content was omitted, with the line count summed from the `... N lines omitted ...` markers when every kind counts its lines (`at least N` otherwise), and the saved raw output path when `--store` kept one. without a saved raw output, the footer suggests a `--raw` re-run only for read-only commands (listings, searches, `git diff`/`git show`, cat-like reads; see `src/core/rerun-safety.ts`); for anything else it says the omitted content is not retrievable, because a re-run could repeat side effects.
 - `--raw` does not bypass capture limits; increase `--max-capture-bytes` when full capture is required.
 - frequent `generic/fallback` matches on a command family are a reducer-coverage signal, not a reason to make fallback "smarter".
 
@@ -72,6 +73,8 @@ for contributor guidance on introducing a new host integration, see `docs/integr
 host adapters choose an inspection policy before calling the shared compactor. the Codex, Claude Code, and pi adapters use the safe-inventory policy:
 
 - exact file-content reads stay raw (`cat`, `sed`, `head`, `tail`, `nl`, `bat`, `jq`, `yq`)
+- size and prose shape do not change this. a file read over 4,000 characters stays raw
+- a command whose text contains `package-lock.json` is the exception. it may be replaced by the package-lock summary
 - standalone repository inventory commands can compact when they are inventory-only (`find`, `ls`, `rg --files`, `git ls-files`, `fd`)
 - inventory pipelines compact only when downstream commands are structural stdin transforms (`sort`, `head`, `tail`, `uniq`)
 - source inventory commands that execute other commands, such as `find ... -exec ...` or `fd --exec ...`, stay raw
@@ -206,7 +209,7 @@ supported host hooks:
 | Junie | `tokenjuice install junie` | `.junie/AGENTS.md` | ✴️ Beta. Inserts a marker-delimited instruction block that tells Junie to use `tokenjuice wrap` for noisy terminal commands and `tokenjuice wrap --raw -- <command>` only when raw bytes are needed; guidance-only, because Junie instructions do not intercept tool output; see `docs/junie-integration.md` |
 | OpenCode | `tokenjuice install opencode` | `~/.config/opencode/plugins/tokenjuice.js` | Installs a project-agnostic plugin that is auto-loaded on OpenCode session start; `tokenjuice install opencode --local` bundles the plugin from the current repo source |
 | OpenHands | `tokenjuice install openhands` | `.openhands/hooks.json` | ✴️ Beta. Uses a project-local `PostToolUse` hook for `terminal` output; compacted context is injected alongside the original output; `tokenjuice install openhands --local` is available for repo-local verification; see `docs/openhands-integration.md` |
-| pi | `tokenjuice install pi` | `~/.pi/agent/extensions/tokenjuice.js` | `tokenjuice install pi --local` forces the extension bundle to be rebuilt from the current repo source and adds `/tj` controls inside pi |
+| pi | `tokenjuice install pi` | `~/.pi/agent/extensions/tokenjuice.js` | `tokenjuice install pi --local` forces the extension bundle to be rebuilt from the current repo source and adds `/tj` controls inside pi; every rewrite stores its raw bytes as an artifact (see the artifact model) |
 | VS Code Copilot Chat | `tokenjuice install vscode-copilot` | `~/.copilot/hooks/tokenjuice-vscode.json` | Uses `preToolUse` shell input rewriting on the `run_in_terminal` tool to route commands through `tokenjuice wrap`. Requires `chat.useHooks` enabled and a trusted workspace. Ignores `COPILOT_HOME`; the shared `~/.copilot/hooks/` dir is used with a per-host filename to coexist with the Copilot CLI install. After install, run `tokenjuice doctor vscode-copilot --print-instructions` and paste the snippet into the repo's `.github/copilot-instructions.md` (or `AGENTS.md`) so the agent treats compacted output as authoritative and only prefixes `tokenjuice wrap --raw --` when raw bytes are required. |
 | Zed | `tokenjuice install zed` | `.rules` | ✴️ Beta. Inserts a marker-delimited rule block that tells Zed Agent to use `tokenjuice wrap` for noisy terminal commands and `tokenjuice wrap --raw -- <command>` only when raw bytes are needed; guidance-only, because Zed rules do not intercept tool output; see `docs/zed-integration.md` |
 
@@ -256,7 +259,7 @@ that is intentionally boring. boring is good here.
 
 ## reliability priorities
 
-- keep raw artifact storage opt-in
+- keep raw artifact storage opt-in, with one named exception: the pi extension stores the raw bytes of every rewrite (default `~/.tokenjuice/artifacts`, override with `TOKENJUICE_ARTIFACT_DIR`) so its compaction notice always names a recoverable artifact; a kept output stores nothing
 - store raw artifacts with private permissions where the platform supports it
 - validate artifact ids before lookup
 - bound captured output and direct input sizes so hostile or accidental huge logs do not blow up memory

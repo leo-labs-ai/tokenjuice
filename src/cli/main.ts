@@ -9,6 +9,7 @@ import { buildAnalysisEntry, discoverCandidates, doctorArtifacts, statsArtifacts
 import { verifyBuiltinFixtures } from "../core/fixtures.js";
 import { parseReduceJsonRequest } from "../core/json-protocol.js";
 import { buildWrapAuthoritativeFooter } from "../core/compaction-metadata.js";
+import { isReadOnlyRerunCommand } from "../core/rerun-safety.js";
 import { reduceExecution } from "../core/reduce.js";
 import { verifyRules } from "../core/rules.js";
 import { runWrappedCommand } from "../core/wrap.js";
@@ -433,12 +434,12 @@ async function runWrap(args: ParsedArgs): Promise<number> {
     ...(typeof args.maxCaptureBytes === "number" ? { maxCaptureBytes: args.maxCaptureBytes } : {}),
     ...(args.source ? { source: args.source } : {}),
   });
-  const inlineText = decorateWrapInlineText(wrapped.result, args.raw);
+  const inlineText = decorateWrapInlineText(wrapped.result, args.raw, args.passthrough);
   emit(args.format, wrapped, inlineText, args.raw);
   return wrapped.exitCode;
 }
 
-export function decorateWrapInlineText(result: WrapResult["result"], raw: boolean): string {
+export function decorateWrapInlineText(result: WrapResult["result"], raw: boolean, argv?: readonly string[]): string {
   const { rawChars, reducedChars } = result.stats;
   if (raw || !result.compaction?.authoritative || reducedChars === 0 || reducedChars >= rawChars) {
     return result.inlineText;
@@ -446,7 +447,11 @@ export function decorateWrapInlineText(result: WrapResult["result"], raw: boolea
   const footer = [
     "",
     "---",
-    buildWrapAuthoritativeFooter(result.rawRef?.path),
+    buildWrapAuthoritativeFooter(result.compaction, {
+      inlineText: result.inlineText,
+      rerunSafe: argv ? isReadOnlyRerunCommand(argv) : false,
+      ...(result.rawRef?.path ? { rawArtifactPath: result.rawRef.path } : {}),
+    }),
   ].join("\n");
   return `${result.inlineText}${footer}`;
 }
